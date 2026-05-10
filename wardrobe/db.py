@@ -18,6 +18,30 @@ CREATE TABLE IF NOT EXISTS items (
     notes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
+
+CREATE TABLE IF NOT EXISTS outfits (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    name TEXT NOT NULL,
+    occasion TEXT NOT NULL,
+    weather TEXT NOT NULL,
+    vibe TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    reasons_json TEXT NOT NULL,
+    item_ids_json TEXT NOT NULL,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outfits_created_at ON outfits(created_at);
+
+CREATE TABLE IF NOT EXISTS outfit_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    outfit_id TEXT NOT NULL,
+    rating INTEGER NOT NULL,
+    reason TEXT,
+    FOREIGN KEY(outfit_id) REFERENCES outfits(id)
+);
+CREATE INDEX IF NOT EXISTS idx_outfit_feedback_outfit ON outfit_feedback(outfit_id);
 """
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -55,3 +79,37 @@ def list_items(con: sqlite3.Connection, category: str | None = None) -> list[dic
         d["tags"] = json.loads(d.pop("tags_json"))
         out.append(d)
     return out
+
+
+def insert_outfit(con: sqlite3.Connection, outfit: dict) -> None:
+    con.execute(
+        """
+        INSERT INTO outfits(id, name, occasion, weather, vibe, score, reasons_json, item_ids_json, notes)
+        VALUES(:id, :name, :occasion, :weather, :vibe, :score, :reasons_json, :item_ids_json, :notes)
+        """,
+        {
+            **outfit,
+            "reasons_json": json.dumps(outfit.get("reasons", [])),
+            "item_ids_json": json.dumps(outfit.get("item_ids", [])),
+        },
+    )
+    con.commit()
+
+
+def list_outfits(con: sqlite3.Connection) -> list[dict]:
+    rows = con.execute("SELECT * FROM outfits ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["reasons"] = json.loads(d.pop("reasons_json"))
+        d["item_ids"] = json.loads(d.pop("item_ids_json"))
+        out.append(d)
+    return out
+
+
+def insert_outfit_feedback(con: sqlite3.Connection, outfit_id: str, rating: int, reason: str | None = None) -> None:
+    con.execute(
+        "INSERT INTO outfit_feedback(outfit_id, rating, reason) VALUES(?, ?, ?)",
+        (outfit_id, rating, reason),
+    )
+    con.commit()
