@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 wardrobe = "wardrobe.cli:main"
+wardrobe-web = "wardrobe.web:main"
 
 [tool.setuptools.packages.find]
 include = ["wardrobe*"]
