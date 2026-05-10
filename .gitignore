@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+data/wardrobe.sqlite3*
+data/images/
+data/embeddings/
+incoming/
+tests/*.jpg
+tests/*.jpeg
+tests/*.png
