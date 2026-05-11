@@ -4,6 +4,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 IMAGE_DIR = DATA_DIR / "images"
 EMBEDDING_DIR = DATA_DIR / "embeddings"
+THUMBNAIL_DIR = DATA_DIR / "thumbnails"
+THUMBNAIL_META_DIR = DATA_DIR / "thumbnail_metadata"
 DB_PATH = DATA_DIR / "wardrobe.sqlite3"
 
 CATEGORIES = {

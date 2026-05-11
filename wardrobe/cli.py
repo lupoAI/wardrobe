@@ -4,6 +4,7 @@ import argparse
 import json
 from .catalog import add_item, items, similar
 from .db import connect
+from .thumbnails import generate_all_thumbnails, generate_thumbnail
 
 def emit(obj):
     print(json.dumps(obj, indent=2, ensure_ascii=False))
@@ -28,6 +29,12 @@ def main(argv=None):
     g.add_argument("--id")
     sim.add_argument("--limit", type=int, default=5)
 
+    thumbs = sub.add_parser("thumbnails", help="Generate game-style item thumbnails")
+    thumbs.add_argument("--id", help="Generate one item thumbnail by id")
+    thumbs.add_argument("--category", "-c", help="Generate thumbnails for one category")
+    thumbs.add_argument("--limit", type=int, help="Limit the number of items processed")
+    thumbs.add_argument("--force", action="store_true", help="Regenerate existing thumbnails")
+
     args = p.parse_args(argv)
     if args.cmd == "init":
         with connect():
@@ -39,6 +46,14 @@ def main(argv=None):
         emit(items(args.category))
     elif args.cmd == "similar":
         emit(similar(image_path=args.image, item_id=args.id, limit=args.limit))
+    elif args.cmd == "thumbnails":
+        if args.id:
+            row = next((r for r in items() if r["id"] == args.id), None)
+            if not row:
+                raise SystemExit(f"No item found with id {args.id}")
+            emit(generate_thumbnail(row, force=args.force))
+        else:
+            emit(generate_all_thumbnails(category=args.category, limit=args.limit, force=args.force))
 
 if __name__ == "__main__":
     main()

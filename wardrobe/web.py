@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import argparse
 import html
+import hashlib
 import json
 import mimetypes
 import os
 import socket
+import subprocess
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .catalog import items
-from .config import IMAGE_DIR, PROJECT_ROOT
+from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
+
+
+USER_DIR = PROJECT_ROOT / "data" / "user" / "salo"
+AVATAR_DIR = USER_DIR / "avatar"
+DRESSED_DIR = USER_DIR / "dressed"
+BASE_AVATAR_PATH = AVATAR_DIR / "neutral_avatar.jpg"
+BASE_AVATAR_TRANSPARENT_PATH = AVATAR_DIR / "neutral_avatar_transparent.png"
+DRESS_MODEL = "google/gemini-3.1-flash-image-preview"
 
 
 def _asset_path(item: dict) -> str:
@@ -22,6 +33,107 @@ def _asset_path(item: dict) -> str:
     except ValueError:
         rel = path.name
     return "/images/" + quote(str(rel).replace(os.sep, "/"))
+
+
+def _thumbnail_path(item: dict) -> Path:
+    png = THUMBNAIL_DIR / f"{item['id']}.png"
+    if png.is_file():
+        return png
+    return THUMBNAIL_DIR / f"{item['id']}.jpg"
+
+
+def _thumbnail_url(item: dict) -> str:
+    thumb = _thumbnail_path(item)
+    if thumb.is_file():
+        return "/thumbnails/" + quote(thumb.name)
+    return _asset_path(item)
+
+
+def _user_asset_url(path: Path) -> str:
+    rel = path.resolve().relative_to(USER_DIR.resolve())
+    return "/user/" + quote(str(rel).replace(os.sep, "/"))
+
+
+def _avatar_url() -> str:
+    if BASE_AVATAR_TRANSPARENT_PATH.is_file():
+        return _user_asset_url(BASE_AVATAR_TRANSPARENT_PATH)
+    return _user_asset_url(BASE_AVATAR_PATH)
+
+
+def _dress_prompt(selected: list[dict]) -> str:
+    garments = "\n".join(
+        f"- {row.get('category')}/{row.get('subcategory') or 'item'}: {row.get('notes') or row['id']}"
+        for row in selected
+    )
+    return f"""Dress the avatar in the selected garments using the reference images.
+
+Inputs: the first image is the base avatar. Every following image is a real clothing reference to apply to the avatar.
+
+Selected garments:
+{garments}
+
+Requirements:
+- Preserve the avatar identity, face, body proportions, neutral forward-facing pose, and full-body framing.
+- Dress the avatar naturally with the selected garments only. Match each garment's real color, material, silhouette, neckline/waist/opening shape, hems, shoes, texture, and distinctive details from the original photos.
+- Layer clothing realistically: outerwear over tops, bottoms at waist/legs, shoes on feet, accessories only if selected.
+- Keep a clean neutral fitting-room/avatar look with plain neutral light grey background and soft studio lighting.
+- No extra people, mannequins, hangers, mirror, phone, text, logos unless actually present on the garment, UI, frame, or decorative background.
+- Non-sexualized, realistic anatomy, no pose change beyond tiny natural clothing fit adjustments."""
+
+
+def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
+    DRESSED_DIR.mkdir(parents=True, exist_ok=True)
+    all_items = {row["id"]: row for row in items()}
+    selected = [all_items[item_id] for item_id in item_ids if item_id in all_items]
+    if not selected:
+        raise ValueError("Choose at least one wardrobe item")
+    if not BASE_AVATAR_PATH.is_file():
+        raise FileNotFoundError(f"Missing avatar: {BASE_AVATAR_PATH}")
+
+    canonical_item_ids = sorted(row["id"] for row in selected)
+    combo_hash = hashlib.sha256("|".join(canonical_item_ids).encode("utf-8")).hexdigest()[:16]
+    out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.jpg"
+    meta_out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.json"
+    prompt = _dress_prompt(selected)
+    cmd = [
+        "openclaw", "infer", "image", "edit",
+        "--file", str(BASE_AVATAR_PATH),
+    ]
+    for row in selected:
+        cmd.extend(["--file", str(Path(row["image_path"]))])
+    cmd.extend([
+        "--prompt", prompt,
+        "--model", DRESS_MODEL,
+        "--aspect-ratio", "2:3",
+        "--resolution", "2K",
+        "--output", str(out),
+        "--json",
+        "--timeout-ms", str(timeout * 1000),
+    ])
+    started = time.time()
+    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 45)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Gemini dress generation failed: {proc.stderr or proc.stdout}")
+    data = json.loads(proc.stdout)
+    outputs = data.get("outputs") or []
+    generated_path = Path(outputs[0].get("path", out)) if outputs else out
+    if not generated_path.is_file():
+        raise RuntimeError(f"No dressed avatar image was generated: {data}")
+    meta = {
+        "image_path": str(generated_path),
+        "image_url": _user_asset_url(generated_path),
+        "combo_hash": combo_hash,
+        "item_ids": canonical_item_ids,
+        "selected_order": [row["id"] for row in selected],
+        "items": [_json_item(row) for row in selected],
+        "model": DRESS_MODEL,
+        "prompt": prompt,
+        "elapsed_seconds": round(time.time() - started, 2),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "provider_output": outputs[0] if outputs else data,
+    }
+    meta_out.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    return meta
 
 
 def _host_ip() -> str:
@@ -59,7 +171,13 @@ def _categories(rows: list[dict]) -> list[tuple[str, int]]:
 
 
 def _json_item(row: dict) -> dict:
-    return {**row, "image_url": _asset_path(row)}
+    return {
+        **row,
+        "image_url": _asset_path(row),
+        "original_image_url": _asset_path(row),
+        "thumbnail_url": _thumbnail_url(row),
+        "has_thumbnail": _thumbnail_path(row).is_file(),
+    }
 
 
 def _json_outfit(outfit: dict) -> dict:
@@ -101,6 +219,7 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
 
     <nav class="tabs">
       <button class="tab active" data-tab="items" onclick="showTab('items')">Pieces</button>
+      <button class="tab" data-tab="dressing" onclick="showTab('dressing'); initDressing()">Dress</button>
       <button class="tab" data-tab="planner" onclick="showTab('planner')">Plan</button>
       <button class="tab" data-tab="saved" onclick="showTab('saved'); loadSavedOutfits()">Saved</button>
     </nav>
@@ -111,8 +230,38 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
         {f'<input type="hidden" name="category" value="{html.escape(selected)}" />' if selected else ''}
         <button>Search</button>
       </form>
+      <div class="view-toggle" role="group" aria-label="Image view mode">
+        <span>View</span>
+        <button type="button" class="mode active" data-mode="original" onclick="setImageMode('original')">Originals</button>
+        <button type="button" class="mode" data-mode="thumbnail" onclick="setImageMode('thumbnail')">Game thumbnails</button>
+      </div>
       <nav class="chips" aria-label="Categories">{''.join(chips)}</nav>
       <main class="grid">{cards}{empty}</main>
+    </section>
+
+    <section id="dressingTab" class="tab-panel">
+      <div class="dressing-room">
+        <div class="avatar-stage">
+          <img id="avatarBase" class="avatar-base" src="{html.escape(_avatar_url())}" alt="Neutral avatar" />
+          <button class="body-hotspot head" onclick="selectSlot('accessories')">Accessories</button>
+          <button class="body-hotspot torso" onclick="selectSlot('tops')">Top</button>
+          <button class="body-hotspot outer" onclick="selectSlot('outerwear')">Outer</button>
+          <button class="body-hotspot legs" onclick="selectSlot('bottoms')">Bottom</button>
+          <button class="body-hotspot feet" onclick="selectSlot('shoes')">Shoes</button>
+        </div>
+        <aside class="dresser-panel">
+          <p class="eyebrow">Character dressing</p>
+          <h2 class="section-title">Build the look</h2>
+          <p class="help">Tap a body area, choose a piece, then generate a dressed avatar from the avatar and original garment photos.</p>
+          <div id="slotButtons" class="slot-buttons"></div>
+          <div id="selectedLook" class="selected-look"></div>
+          <button id="generateDressed" type="button" class="primary wide" onclick="generateDressedAvatar()">Dress avatar with Gemini</button>
+          <div id="dressStatus" class="dress-status"></div>
+        </aside>
+      </div>
+      <div class="picker-head"><h2 class="section-title" id="pickerTitle">Choose a top</h2><button type="button" class="primary ghost" onclick="clearDressingSlot()">Clear slot</button></div>
+      <div id="dresserGrid" class="grid"></div>
+      <div id="dressedResults" class="dressed-results"></div>
     </section>
 
     <section id="plannerTab" class="tab-panel">
@@ -153,9 +302,10 @@ def _render_card(row: dict) -> str:
     sub = html.escape(row.get("subcategory") or row.get("category") or "")
     item_id = html.escape(row["id"])
     img = html.escape(_asset_path(row))
+    thumb = html.escape(_thumbnail_url(row))
     return f"""
       <article class="card" onclick="openItem('{item_id}')" tabindex="0" onkeydown="if(event.key==='Enter') openItem('{item_id}')">
-        <div class="photo"><img loading="lazy" src="{img}" alt="{notes}" /></div>
+        <div class="photo"><img class="wardrobe-img" loading="lazy" src="{img}" data-original="{img}" data-thumbnail="{thumb}" alt="{notes}" /></div>
         <div class="card-copy">
           <div class="row"><span class="type">{sub}</span><code>{item_id.replace('item_', '')}</code></div>
           <h2>{notes}</h2>
@@ -169,18 +319,37 @@ CSS = r"""
 :root { color-scheme: light; --bg:#f6f2ea; --ink:#171613; --muted:#736b60; --line:rgba(23,22,19,.12); --card:rgba(255,255,255,.72); --strong:rgba(255,255,255,.93); --accent:#111827; --accent2:#c67a45; --good:#166534; --shadow:0 18px 50px rgba(33,28,20,.12); }
 *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif;background:radial-gradient(circle at 12% 0%,rgba(198,122,69,.18),transparent 30rem),radial-gradient(circle at 88% 8%,rgba(38,70,83,.14),transparent 28rem),var(--bg);color:var(--ink)}
 .shell{width:min(1180px,100%);margin:0 auto;padding:max(18px,env(safe-area-inset-top)) 14px 40px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:end;padding:22px 6px 18px}.eyebrow{margin:0 0 6px;text-transform:uppercase;letter-spacing:.14em;font-size:11px;color:var(--muted);font-weight:800}h1{margin:0;font-size:clamp(42px,12vw,84px);line-height:.86;letter-spacing:-.075em}.sub{margin:12px 0 0;color:var(--muted);font-weight:600}.stat{min-width:94px;padding:16px;border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:24px;text-align:center;box-shadow:var(--shadow)}.stat strong{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;font-weight:700}
-.tabs{position:sticky;top:0;z-index:7;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px;margin-bottom:12px;background:rgba(246,242,234,.78);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.tab{border:0;border-radius:16px;padding:13px 10px;background:transparent;font:inherit;font-weight:900;color:var(--muted)}.tab.active{background:var(--ink);color:white}.tab-panel{display:none}.active-panel{display:block}
+.tabs{position:sticky;top:0;z-index:7;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px;margin-bottom:12px;background:rgba(246,242,234,.78);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.tab{border:0;border-radius:16px;padding:13px 10px;background:transparent;font:inherit;font-weight:900;color:var(--muted)}.tab.active{background:var(--ink);color:white}.tab-panel{display:none}.active-panel{display:block}
 .search{display:flex;gap:8px;padding:8px;background:rgba(255,255,255,.45);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.search input{min-width:0;flex:1;border:0;outline:0;border-radius:16px;padding:15px 14px;background:rgba(255,255,255,.78);color:var(--ink);font:inherit;font-weight:650}.search button,.primary{border:0;border-radius:16px;padding:0 18px;background:var(--accent);color:white;font-weight:900;min-height:48px}.primary.ghost{background:rgba(23,22,19,.08);color:var(--ink)}
+.view-toggle{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;margin:12px 2px 0;padding:7px;border:1px solid var(--line);background:rgba(255,255,255,.52);border-radius:18px;box-shadow:0 8px 24px rgba(33,28,20,.08);overflow-x:auto}.view-toggle span{padding:0 7px;color:var(--muted);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.mode{white-space:nowrap;border:0;border-radius:13px;padding:10px 12px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:900}.mode.active{background:var(--ink);color:white}.photo img.thumbnail-mode,.strip img.thumbnail-mode{object-fit:contain;background:transparent;padding:7%}
 .chips{display:flex;gap:9px;overflow-x:auto;padding:16px 2px 14px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}.chip{white-space:nowrap;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:rgba(255,255,255,.55);padding:10px 13px;border-radius:999px;font-weight:800;text-transform:capitalize}.chip span{color:var(--muted);margin-left:5px}.chip.active{background:var(--ink);color:white;border-color:var(--ink)}.chip.active span{color:rgba(255,255,255,.65)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:26px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10);cursor:pointer;transition:transform .18s ease}.card:active{transform:scale(.985)}.photo{aspect-ratio:4/5;background:#e8dfd2;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}.card-copy{padding:12px}.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.type{color:var(--accent2);text-transform:capitalize;font-size:12px;font-weight:900}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted)}h2{margin:7px 0 10px;font-size:14px;line-height:1.18;letter-spacing:-.02em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.pills{display:flex;flex-wrap:wrap;gap:5px}.pills.muted{margin-top:7px;opacity:.72}.pill,.swatch{display:inline-flex;align-items:center;min-height:24px;padding:5px 8px;border-radius:999px;background:rgba(23,22,19,.07);font-size:11px;font-weight:800;color:#3a352e}.swatch{background:rgba(198,122,69,.13)}.empty{padding:42px 16px;border:1px dashed var(--line);border-radius:24px;text-align:center;color:var(--muted);font-weight:800;grid-column:1/-1}
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
+.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:8px 11px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2)}.body-hotspot.head{top:9%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900}.picker-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
+@media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
 """
 
 
 JS = r"""
+function readJsonStorage(key, fallback){
+  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
+  catch(e){ localStorage.removeItem(key); return fallback; }
+}
+let imageMode = localStorage.getItem('wardrobeImageMode') || 'original';
+function imageFor(item){ return imageMode === 'thumbnail' ? (item.thumbnail_url || item.image_url) : (item.original_image_url || item.image_url); }
+function setImageMode(mode){
+  imageMode = mode === 'thumbnail' ? 'thumbnail' : 'original';
+  localStorage.setItem('wardrobeImageMode', imageMode);
+  document.querySelectorAll('.mode').forEach(b=>b.classList.toggle('active', b.dataset.mode===imageMode));
+  document.querySelectorAll('img.wardrobe-img').forEach(img=>{
+    img.src = imageMode === 'thumbnail' ? (img.dataset.thumbnail || img.dataset.original) : img.dataset.original;
+    img.classList.toggle('thumbnail-mode', imageMode === 'thumbnail');
+  });
+}
+window.addEventListener('DOMContentLoaded',()=>setImageMode(imageMode));
 function showTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active-panel'));
@@ -190,7 +359,8 @@ async function openItem(id){
   const res=await fetch('/api/items/'+encodeURIComponent(id)); const item=await res.json();
   const chips=(item.tags||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('');
   const colors=(item.colors||[]).map(t=>`<span class="swatch">${escapeHtml(t)}</span>`).join('');
-  document.getElementById('detailBody').innerHTML=`<img class="detail-img" src="${item.image_url}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
+  const detailImg=imageFor(item);
+  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
   detail.showModal();
 }
 async function loadSuggestions(){
@@ -205,7 +375,7 @@ async function loadSavedOutfits(){
   box.innerHTML=outfits.length?outfits.map(o=>renderOutfit(o,false)).join(''):'<div class="empty">No saved outfits yet. Save a suggestion first.</div>';
 }
 function renderOutfit(o,canSave){
-  const imgs=(o.items||[]).map(i=>`<img src="${i.image_url}" alt="${escapeHtml(i.notes||i.id)}" onclick="openItem('${i.id}')">`).join('');
+  const imgs=(o.items||[]).map(i=>`<img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${imageFor(i)}" data-original="${i.original_image_url||i.image_url}" data-thumbnail="${i.thumbnail_url||i.image_url}" alt="${escapeHtml(i.notes||i.id)}" onclick="openItem('${i.id}')">`).join('');
   const cls=(o.items||[]).length===2?'two':(o.items||[]).length===3?'three':'';
   const reasons=(o.reasons||[]).map(r=>`<li>${escapeHtml(r)}</li>`).join('');
   const itemIds=JSON.stringify((o.items||[]).map(i=>i.id)).replaceAll('"','&quot;');
@@ -223,6 +393,105 @@ async function rate(outfitId,rating){
   await fetch('/api/outfits/'+encodeURIComponent(outfitId)+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating})});
   alert(rating>0?'Marked as good':'Marked as not for you');
 }
+
+const dressingSlots = ['tops','outerwear','bottoms','shoes','accessories'];
+let dressingItems = [];
+let activeSlot = localStorage.getItem('wardrobeActiveSlot') || 'tops';
+let selectedDressing = readJsonStorage('wardrobeSelectedDressing', {});
+async function initDressing(){
+  try{
+    if(!dressingItems.length){ dressingItems = await (await fetch('/api/items')).json(); }
+    renderSlotButtons(); renderSelectedLook(); selectSlot(activeSlot, false);
+  }catch(e){
+    const status=document.getElementById('dressStatus');
+    if(status) status.textContent='Could not load wardrobe items: '+e.message;
+  }
+}
+function selectSlot(slot, persist=true){
+  activeSlot = dressingSlots.includes(slot) ? slot : 'tops';
+  if(persist) localStorage.setItem('wardrobeActiveSlot', activeSlot);
+  renderSlotButtons();
+  const title=document.getElementById('pickerTitle'); if(title) title.textContent='Choose '+slotLabel(activeSlot).toLowerCase();
+  const rows=dressingItems.filter(i=>i.category===activeSlot);
+  const grid=document.getElementById('dresserGrid'); if(!grid) return;
+  grid.innerHTML = rows.length ? rows.map(renderDresserChoice).join('') : '<div class="empty">No pieces in this slot.</div>';
+}
+function slotLabel(slot){return ({tops:'Top',outerwear:'Outerwear',bottoms:'Bottom',shoes:'Shoes',accessories:'Accessories'}[slot]||slot)}
+function renderSlotButtons(){
+  const box=document.getElementById('slotButtons'); if(!box) return;
+  box.innerHTML=dressingSlots.map(s=>`<button type="button" class="slot-btn ${s===activeSlot?'active':''}" data-slot="${s}">${slotLabel(s)}</button>`).join('');
+}
+function renderDresserChoice(item){
+  const selected=selectedDressing[activeSlot]===item.id;
+  const img=item.thumbnail_url||item.image_url;
+  return `<article class="card dresser-choice ${selected?'selected':''}" data-item-id="${escapeHtml(item.id)}" role="button" tabindex="0"><div class="photo"><img class="thumbnail-mode" loading="lazy" src="${img}" alt="${escapeHtml(item.notes||item.id)}" /></div><div class="card-copy"><div class="row"><span class="type">${escapeHtml(item.subcategory||item.category)}</span><code>${escapeHtml(item.id.replace('item_',''))}</code></div><h2>${escapeHtml(item.notes||item.id)}</h2></div></article>`;
+}
+function chooseDressingItem(id){
+  selectedDressing[activeSlot]=id;
+  localStorage.setItem('wardrobeSelectedDressing', JSON.stringify(selectedDressing));
+  renderSelectedLook(); selectSlot(activeSlot, false);
+}
+function clearDressingSlot(){
+  delete selectedDressing[activeSlot];
+  localStorage.setItem('wardrobeSelectedDressing', JSON.stringify(selectedDressing));
+  renderSelectedLook(); selectSlot(activeSlot, false);
+}
+function renderSelectedLook(){
+  const box=document.getElementById('selectedLook'); if(!box) return;
+  const byId=Object.fromEntries(dressingItems.map(i=>[i.id,i]));
+  box.innerHTML=dressingSlots.map(slot=>{
+    const item=byId[selectedDressing[slot]];
+    if(!item) return `<div class="selected-slot"><div></div><div><b>${slotLabel(slot)}</b><br><span class="muted">Not selected</span></div><button type="button" data-slot="${slot}">Pick</button></div>`;
+    return `<div class="selected-slot"><img src="${item.thumbnail_url||item.image_url}" alt=""><div><b>${slotLabel(slot)}</b><br><span>${escapeHtml(item.notes||item.id)}</span></div><button type="button" data-slot="${slot}">Change</button></div>`;
+  }).join('');
+}
+document.addEventListener('click', (event)=>{
+  const slotButton = event.target.closest('[data-slot]');
+  if(slotButton){ event.preventDefault(); selectSlot(slotButton.dataset.slot); return; }
+  const choice = event.target.closest('.dresser-choice[data-item-id]');
+  if(choice){ event.preventDefault(); chooseDressingItem(choice.dataset.itemId); }
+});
+document.addEventListener('keydown', (event)=>{
+  if((event.key==='Enter' || event.key===' ') && event.target.matches('.dresser-choice[data-item-id]')){
+    event.preventDefault(); chooseDressingItem(event.target.dataset.itemId);
+  }
+});
+async function generateDressedAvatar(){
+  const item_ids=dressingSlots.map(s=>selectedDressing[s]).filter(Boolean);
+  if(!item_ids.length){ alert('Pick at least one clothing item first.'); return; }
+  const status=document.getElementById('dressStatus');
+  const btn=document.getElementById('generateDressed');
+  status.textContent='Sending avatar + original garment photos to Gemini Flash…'; btn.disabled=true;
+  try{
+    const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Generation failed');
+    status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
+  }catch(e){ status.textContent='Generation failed: '+e.message; return; }
+  finally{ btn.disabled=false; }
+  try{
+    renderDressedResult(data, item_ids.length);
+  }catch(e){
+    status.textContent='Generated and saved, but the preview could not render here. Open: '+String(data.image_url||'');
+  }
+}
+function renderDressedResult(data, count){
+  const results=document.getElementById('dressedResults'); if(!results) return;
+  const url=String(data.image_url||'');
+  const article=document.createElement('article'); article.className='dressed-card';
+  const img=document.createElement('img'); img.setAttribute('src', url); img.setAttribute('alt', 'Dressed avatar');
+  const copy=document.createElement('div'); copy.className='detail-copy';
+  const eyebrow=document.createElement('p'); eyebrow.className='eyebrow'; eyebrow.textContent='Generated look';
+  const title=document.createElement('h2'); title.textContent=String(count)+' selected item'+(count===1?'':'s');
+  const meta=document.createElement('div'); meta.className='meta';
+  const label=document.createElement('b'); label.textContent='Hash';
+  const code=document.createElement('code'); code.textContent=String(data.combo_hash||'');
+  meta.appendChild(label); meta.appendChild(code);
+  const actions=document.createElement('div'); actions.className='actions';
+  const link=document.createElement('a'); link.className='chip active'; link.setAttribute('href', url); link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener'); link.textContent='Open image';
+  actions.appendChild(link); copy.appendChild(eyebrow); copy.appendChild(title); copy.appendChild(meta); copy.appendChild(actions); article.appendChild(img); article.appendChild(copy); results.insertBefore(article, results.firstChild);
+}
+
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 """
 
@@ -262,8 +531,12 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             self._send_json([_json_outfit(o) for o in outfits]); return
         if parsed.path == "/api/outfits":
             self._send_json([_json_outfit(o) for o in saved_outfits()]); return
+        if parsed.path.startswith("/user/"):
+            self._send_user_asset(unquote(parsed.path.removeprefix("/user/"))); return
         if parsed.path.startswith("/images/"):
             self._send_image(unquote(parsed.path.removeprefix("/images/"))); return
+        if parsed.path.startswith("/thumbnails/"):
+            self._send_thumbnail(unquote(parsed.path.removeprefix("/thumbnails/"))); return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -283,6 +556,9 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/api/outfits/") and parsed.path.endswith("/rate"):
                 outfit_id = unquote(parsed.path.removeprefix("/api/outfits/").removesuffix("/rate"))
                 self._send_json(rate_outfit(outfit_id, int(payload.get("rating", 0)), payload.get("reason"))); return
+            if parsed.path == "/api/dressing/generate":
+                item_ids = [str(x) for x in (payload.get("item_ids") or [])]
+                self._send_json(_run_dress_generation(item_ids), status=201); return
             self._send_json({"error": "not found"}, status=404)
         except Exception as e:  # small local tool; surface useful errors
             self._send_json({"error": str(e)}, status=400)
@@ -294,7 +570,16 @@ class WardrobeHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _send_image(self, rel: str) -> None:
-        base = IMAGE_DIR.resolve()
+        self._send_file_from(IMAGE_DIR, rel)
+
+    def _send_thumbnail(self, rel: str) -> None:
+        self._send_file_from(THUMBNAIL_DIR, rel)
+
+    def _send_user_asset(self, rel: str) -> None:
+        self._send_file_from(USER_DIR, rel)
+
+    def _send_file_from(self, base_dir: Path, rel: str) -> None:
+        base = base_dir.resolve()
         path = (base / rel).resolve()
         if base not in path.parents and path != base:
             self._send(403, b"Forbidden", "text/plain; charset=utf-8"); return
@@ -315,6 +600,8 @@ class WardrobeHandler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if content_type.startswith("text/html"):
+            self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

@@ -10,3 +10,9 @@ incoming/
 tests/*.jpg
 tests/*.jpeg
 tests/*.png
+# Generated/private wardrobe artifacts
+data/thumbnails/
+data/thumbnail_metadata/
+data/outfits.json
+_saved_outfits.json
+data/user/
