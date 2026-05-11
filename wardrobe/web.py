@@ -231,9 +231,9 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
         <button>Search</button>
       </form>
       <div class="view-toggle" role="group" aria-label="Image view mode">
-        <span>View</span>
-        <button type="button" class="mode active" data-mode="original" onclick="setImageMode('original')">Originals</button>
-        <button type="button" class="mode" data-mode="thumbnail" onclick="setImageMode('thumbnail')">Game thumbnails</button>
+        <span>Images</span>
+        <button type="button" class="mode active" data-mode="original" onclick="setImageMode('original')">Photos</button>
+        <button type="button" class="mode" data-mode="thumbnail" onclick="setImageMode('thumbnail')">Game icons</button>
       </div>
       <nav class="chips" aria-label="Categories">{''.join(chips)}</nav>
       <main class="grid">{cards}{empty}</main>
@@ -242,24 +242,40 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
     <section id="dressingTab" class="tab-panel">
       <div class="dressing-room">
         <div class="avatar-stage">
+          <div class="avatar-hint">Tap a body area → choose clothes below</div>
           <img id="avatarBase" class="avatar-base" src="{html.escape(_avatar_url())}" alt="Neutral avatar" />
-          <button class="body-hotspot head" onclick="selectSlot('accessories')">Accessories</button>
-          <button class="body-hotspot torso" onclick="selectSlot('tops')">Top</button>
-          <button class="body-hotspot outer" onclick="selectSlot('outerwear')">Outer</button>
-          <button class="body-hotspot legs" onclick="selectSlot('bottoms')">Bottom</button>
-          <button class="body-hotspot feet" onclick="selectSlot('shoes')">Shoes</button>
+          <button type="button" class="body-hotspot head" data-slot="accessories" aria-pressed="false">Accessories</button>
+          <button type="button" class="body-hotspot torso" data-slot="tops" aria-pressed="false">Top</button>
+          <button type="button" class="body-hotspot outer" data-slot="outerwear" aria-pressed="false">Outerwear</button>
+          <button type="button" class="body-hotspot legs" data-slot="bottoms" aria-pressed="false">Bottom</button>
+          <button type="button" class="body-hotspot feet" data-slot="shoes" aria-pressed="false">Shoes</button>
         </div>
         <aside class="dresser-panel">
           <p class="eyebrow">Character dressing</p>
           <h2 class="section-title">Build the look</h2>
-          <p class="help">Tap a body area, choose a piece, then generate a dressed avatar from the avatar and original garment photos.</p>
+          <p class="help">1. Tap the avatar area you want to dress. 2. Pick the clothing card below. 3. Generate the final try-on image.</p>
           <div id="slotButtons" class="slot-buttons"></div>
+          <p id="slotCount" class="slot-count">0 of 5 slots filled</p>
           <div id="selectedLook" class="selected-look"></div>
           <button id="generateDressed" type="button" class="primary wide" onclick="generateDressedAvatar()">Dress avatar with Gemini</button>
           <div id="dressStatus" class="dress-status"></div>
         </aside>
       </div>
-      <div class="picker-head"><h2 class="section-title" id="pickerTitle">Choose a top</h2><button type="button" class="primary ghost" onclick="clearDressingSlot()">Clear slot</button></div>
+      <div class="picker-head">
+        <div>
+          <p class="eyebrow">Picker below</p>
+          <h2 class="section-title" id="pickerTitle">Choose a top</h2>
+          <p id="pickerHelp" class="picker-help">These are Top pieces. Tap a card to assign it to the active slot.</p>
+        </div>
+        <div class="picker-actions">
+          <div class="view-toggle compact" role="group" aria-label="Dress picker image mode">
+            <span>Images</span>
+            <button type="button" class="mode active" data-mode="original" onclick="setImageMode('original')">Photos</button>
+            <button type="button" class="mode" data-mode="thumbnail" onclick="setImageMode('thumbnail')">Icons</button>
+          </div>
+          <button type="button" class="primary ghost" onclick="clearDressingSlot()">Clear slot</button>
+        </div>
+      </div>
       <div id="dresserGrid" class="grid"></div>
       <div id="dressedResults" class="dressed-results"></div>
     </section>
@@ -321,13 +337,13 @@ CSS = r"""
 .shell{width:min(1180px,100%);margin:0 auto;padding:max(18px,env(safe-area-inset-top)) 14px 40px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:end;padding:22px 6px 18px}.eyebrow{margin:0 0 6px;text-transform:uppercase;letter-spacing:.14em;font-size:11px;color:var(--muted);font-weight:800}h1{margin:0;font-size:clamp(42px,12vw,84px);line-height:.86;letter-spacing:-.075em}.sub{margin:12px 0 0;color:var(--muted);font-weight:600}.stat{min-width:94px;padding:16px;border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:24px;text-align:center;box-shadow:var(--shadow)}.stat strong{display:block;font-size:28px}.stat span{color:var(--muted);font-size:12px;font-weight:700}
 .tabs{position:sticky;top:0;z-index:7;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px;margin-bottom:12px;background:rgba(246,242,234,.78);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.tab{border:0;border-radius:16px;padding:13px 10px;background:transparent;font:inherit;font-weight:900;color:var(--muted)}.tab.active{background:var(--ink);color:white}.tab-panel{display:none}.active-panel{display:block}
 .search{display:flex;gap:8px;padding:8px;background:rgba(255,255,255,.45);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.search input{min-width:0;flex:1;border:0;outline:0;border-radius:16px;padding:15px 14px;background:rgba(255,255,255,.78);color:var(--ink);font:inherit;font-weight:650}.search button,.primary{border:0;border-radius:16px;padding:0 18px;background:var(--accent);color:white;font-weight:900;min-height:48px}.primary.ghost{background:rgba(23,22,19,.08);color:var(--ink)}
-.view-toggle{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;margin:12px 2px 0;padding:7px;border:1px solid var(--line);background:rgba(255,255,255,.52);border-radius:18px;box-shadow:0 8px 24px rgba(33,28,20,.08);overflow-x:auto}.view-toggle span{padding:0 7px;color:var(--muted);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.mode{white-space:nowrap;border:0;border-radius:13px;padding:10px 12px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:900}.mode.active{background:var(--ink);color:white}.photo img.thumbnail-mode,.strip img.thumbnail-mode{object-fit:contain;background:transparent;padding:7%}
+.view-toggle{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;margin:12px 2px 0;padding:7px;border:1px solid var(--line);background:rgba(255,255,255,.52);border-radius:18px;box-shadow:0 8px 24px rgba(33,28,20,.08);overflow-x:auto}.view-toggle.compact{margin:0;box-shadow:none;background:rgba(255,255,255,.66)}.view-toggle span{padding:0 7px;color:var(--muted);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.mode{white-space:nowrap;border:0;border-radius:13px;padding:10px 12px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:900}.mode.active{background:var(--ink);color:white}.photo img.thumbnail-mode,.strip img.thumbnail-mode{object-fit:contain;background:transparent;padding:7%}
 .chips{display:flex;gap:9px;overflow-x:auto;padding:16px 2px 14px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}.chip{white-space:nowrap;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:rgba(255,255,255,.55);padding:10px 13px;border-radius:999px;font-weight:800;text-transform:capitalize}.chip span{color:var(--muted);margin-left:5px}.chip.active{background:var(--ink);color:white;border-color:var(--ink)}.chip.active span{color:rgba(255,255,255,.65)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:26px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10);cursor:pointer;transition:transform .18s ease}.card:active{transform:scale(.985)}.photo{aspect-ratio:4/5;background:#e8dfd2;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}.card-copy{padding:12px}.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.type{color:var(--accent2);text-transform:capitalize;font-size:12px;font-weight:900}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted)}h2{margin:7px 0 10px;font-size:14px;line-height:1.18;letter-spacing:-.02em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.pills{display:flex;flex-wrap:wrap;gap:5px}.pills.muted{margin-top:7px;opacity:.72}.pill,.swatch{display:inline-flex;align-items:center;min-height:24px;padding:5px 8px;border-radius:999px;background:rgba(23,22,19,.07);font-size:11px;font-weight:800;color:#3a352e}.swatch{background:rgba(198,122,69,.13)}.empty{padding:42px 16px;border:1px dashed var(--line);border-radius:24px;text-align:center;color:var(--muted);font-weight:800;grid-column:1/-1}
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
-.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:8px 11px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2)}.body-hotspot.head{top:9%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900}.picker-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
+.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
 """
@@ -410,11 +426,20 @@ async function initDressing(){
 function selectSlot(slot, persist=true){
   activeSlot = dressingSlots.includes(slot) ? slot : 'tops';
   if(persist) localStorage.setItem('wardrobeActiveSlot', activeSlot);
-  renderSlotButtons();
+  renderSlotButtons(); updateActiveHotspots();
   const title=document.getElementById('pickerTitle'); if(title) title.textContent='Choose '+slotLabel(activeSlot).toLowerCase();
+  const help=document.getElementById('pickerHelp'); if(help) help.textContent=`These are ${slotLabel(activeSlot)} pieces. Tap a card below to assign it to the active slot.`;
   const rows=dressingItems.filter(i=>i.category===activeSlot);
   const grid=document.getElementById('dresserGrid'); if(!grid) return;
   grid.innerHTML = rows.length ? rows.map(renderDresserChoice).join('') : '<div class="empty">No pieces in this slot.</div>';
+  renderSelectedLook();
+  setImageMode(imageMode);
+  if(persist && window.matchMedia('(max-width: 899px)').matches){ grid.scrollIntoView({behavior:'smooth',block:'start'}); }
+}
+function updateActiveHotspots(){
+  document.querySelectorAll('.body-hotspot[data-slot]').forEach(b=>{
+    const on=b.dataset.slot===activeSlot; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on?'true':'false');
+  });
 }
 function slotLabel(slot){return ({tops:'Top',outerwear:'Outerwear',bottoms:'Bottom',shoes:'Shoes',accessories:'Accessories'}[slot]||slot)}
 function renderSlotButtons(){
@@ -423,8 +448,10 @@ function renderSlotButtons(){
 }
 function renderDresserChoice(item){
   const selected=selectedDressing[activeSlot]===item.id;
-  const img=item.thumbnail_url||item.image_url;
-  return `<article class="card dresser-choice ${selected?'selected':''}" data-item-id="${escapeHtml(item.id)}" role="button" tabindex="0"><div class="photo"><img class="thumbnail-mode" loading="lazy" src="${img}" alt="${escapeHtml(item.notes||item.id)}" /></div><div class="card-copy"><div class="row"><span class="type">${escapeHtml(item.subcategory||item.category)}</span><code>${escapeHtml(item.id.replace('item_',''))}</code></div><h2>${escapeHtml(item.notes||item.id)}</h2></div></article>`;
+  const original=item.original_image_url||item.image_url;
+  const thumbnail=item.thumbnail_url||item.image_url;
+  const src=imageFor(item);
+  return `<article class="card dresser-choice ${selected?'selected':''}" data-item-id="${escapeHtml(item.id)}" role="button" tabindex="0"><div class="photo"><img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" loading="lazy" src="${src}" data-original="${original}" data-thumbnail="${thumbnail}" alt="${escapeHtml(item.notes||item.id)}" /></div><div class="card-copy"><div class="row"><span class="type">${escapeHtml(item.subcategory||item.category)}</span><code>${escapeHtml(item.id.replace('item_',''))}</code></div><h2>${escapeHtml(item.notes||item.id)}</h2></div></article>`;
 }
 function chooseDressingItem(id){
   selectedDressing[activeSlot]=id;
@@ -439,10 +466,16 @@ function clearDressingSlot(){
 function renderSelectedLook(){
   const box=document.getElementById('selectedLook'); if(!box) return;
   const byId=Object.fromEntries(dressingItems.map(i=>[i.id,i]));
+  const filled=dressingSlots.filter(slot=>selectedDressing[slot]).length;
+  const count=document.getElementById('slotCount'); if(count) count.textContent=`${filled} of ${dressingSlots.length} slots filled`;
+  const btn=document.getElementById('generateDressed'); if(btn) btn.disabled=filled===0;
   box.innerHTML=dressingSlots.map(slot=>{
     const item=byId[selectedDressing[slot]];
-    if(!item) return `<div class="selected-slot"><div></div><div><b>${slotLabel(slot)}</b><br><span class="muted">Not selected</span></div><button type="button" data-slot="${slot}">Pick</button></div>`;
-    return `<div class="selected-slot"><img src="${item.thumbnail_url||item.image_url}" alt=""><div><b>${slotLabel(slot)}</b><br><span>${escapeHtml(item.notes||item.id)}</span></div><button type="button" data-slot="${slot}">Change</button></div>`;
+    const active=slot===activeSlot;
+    if(!item) return `<div class="selected-slot ${active?'active':''}"><div></div><div><b>${slotLabel(slot)}</b><small>${active?'Active slot — pick from the grid below':'Not selected'}</small></div><button type="button" data-slot="${slot}">Pick</button></div>`;
+    const original=item.original_image_url||item.image_url;
+    const thumbnail=item.thumbnail_url||item.image_url;
+    return `<div class="selected-slot ${active?'active':''}"><img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${imageFor(item)}" data-original="${original}" data-thumbnail="${thumbnail}" alt=""><div><b>${slotLabel(slot)}</b><small>${escapeHtml(item.subcategory||item.category)}</small><span>${escapeHtml(item.notes||item.id)}</span></div><button type="button" data-slot="${slot}">Change</button></div>`;
   }).join('');
 }
 document.addEventListener('click', (event)=>{
