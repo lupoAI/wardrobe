@@ -132,23 +132,54 @@ def score_outfit(parts: list[dict], occasion: str = "casual", weather: str = "mi
     return max(0, min(100, score)), reasons[:5]
 
 
-def suggest_outfits(occasion: str = "casual", weather: str = "mild", vibe: str = "balanced", limit: int = 12) -> list[dict]:
+def _parts_with_target(candidates: list[list[dict]], target_item: dict | None) -> list[list[dict]]:
+    if not target_item:
+        return candidates
+    target_id = target_item["id"]
+    if target_item["category"] in {"tops", "bottoms", "shoes", "outerwear"}:
+        return [parts for parts in candidates if any(item["id"] == target_id for item in parts)]
+    return [parts + [target_item] for parts in candidates if not any(item["id"] == target_id for item in parts)]
+
+
+def suggest_outfits(
+    occasion: str = "casual",
+    weather: str = "mild",
+    vibe: str = "balanced",
+    limit: int = 12,
+    item_id: str | None = None,
+) -> list[dict]:
     rows = items()
+    target_item = next((row for row in rows if row["id"] == item_id), None) if item_id else None
+    if item_id and not target_item:
+        raise ValueError(f"No item found with id {item_id}")
+
     tops = [i for i in rows if i["category"] == "tops"]
     bottoms = [i for i in rows if i["category"] == "bottoms"]
     shoes = [i for i in rows if i["category"] == "shoes"]
     outerwear = [i for i in rows if i["category"] == "outerwear"]
+
+    if target_item:
+        if target_item["category"] == "tops":
+            tops = [target_item]
+        elif target_item["category"] == "bottoms":
+            bottoms = [target_item]
+        elif target_item["category"] == "shoes":
+            shoes = [target_item]
+        elif target_item["category"] == "outerwear":
+            outerwear = [target_item]
 
     candidates: list[list[dict]] = []
     for top, bottom in itertools.product(tops, bottoms):
         candidates.append([top, bottom])
         for shoe in shoes[:12]:
             candidates.append([top, bottom, shoe])
-        if weather in {"cold", "rainy", "mild"}:
+        if weather in {"cold", "rainy", "mild"} or (target_item and target_item["category"] == "outerwear"):
             for layer in outerwear[:10]:
                 candidates.append([top, bottom, layer])
                 for shoe in shoes[:8]:
                     candidates.append([top, bottom, layer, shoe])
+
+    candidates = _parts_with_target(candidates, target_item)
 
     seen: set[tuple[str, ...]] = set()
     scored = []
@@ -166,10 +197,10 @@ def suggest_outfits(occasion: str = "casual", weather: str = "mild", vibe: str =
             "occasion": occasion,
             "weather": weather,
             "vibe": vibe,
+            "remix_item_id": item_id,
         })
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
-
 
 def saved_outfits() -> list[dict]:
     rows = items()
