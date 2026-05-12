@@ -94,6 +94,14 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
     combo_hash = hashlib.sha256("|".join(canonical_item_ids).encode("utf-8")).hexdigest()[:16]
     out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.jpg"
     meta_out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.json"
+    if out.is_file() and meta_out.is_file():
+        try:
+            meta = json.loads(meta_out.read_text())
+            meta["image_url"] = _user_asset_url(out)
+            meta["cached"] = True
+            return meta
+        except (OSError, json.JSONDecodeError):
+            pass
     prompt = _dress_prompt(selected)
     cmd = [
         "openclaw", "infer", "image", "edit",
@@ -495,22 +503,30 @@ async function generateDressedAvatar(){
   const status=document.getElementById('dressStatus');
   const btn=document.getElementById('generateDressed');
   status.textContent='Sending avatar + original garment photos to Gemini Flash…'; btn.disabled=true;
+  let data=null;
   try{
     const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
-    const data=await res.json();
+    data=await res.json();
     if(!res.ok) throw new Error(data.error||'Generation failed');
-    status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
-  }catch(e){ status.textContent='Generation failed: '+e.message; return; }
-  finally{ btn.disabled=false; }
-  try{
     renderDressedResult(data, item_ids.length);
+    status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
   }catch(e){
-    status.textContent='Generated and saved, but the preview could not render here. Open: '+String(data.image_url||'');
+    if(data && data.image_url){
+      status.textContent='Generated and saved, but the preview could not render here. Open image below or reload the page.';
+      try{ renderDressedResult(data, item_ids.length); }catch(_err){}
+    }else{
+      status.textContent='Generation failed: '+e.message;
+    }
+    return;
   }
+  finally{ btn.disabled=false; }
 }
 function renderDressedResult(data, count){
   const results=document.getElementById('dressedResults'); if(!results) return;
-  const url=String(data.image_url||'');
+  const rawUrl=String(data.image_url||'');
+  if(!rawUrl) throw new Error('No image URL returned');
+  const cacheBust=String(data.combo_hash||Date.now());
+  const url=rawUrl+(rawUrl.includes('?')?'&':'?')+'v='+encodeURIComponent(cacheBust);
   const article=document.createElement('article'); article.className='dressed-card';
   const img=document.createElement('img'); img.setAttribute('src', url); img.setAttribute('alt', 'Dressed avatar');
   const copy=document.createElement('div'); copy.className='detail-copy';
