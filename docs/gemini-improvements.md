@@ -37,3 +37,13 @@ This document tracks the improvements made by Gemini to the Wardrobe app.
 - **Gemini CLI limitation:** Gemini could edit files, but its session did not expose a shell/git tool, so Eggo ran checks and created commits afterward.
 - **Future Idea:** Integrate a "Copy to Clipboard" for the generated outfit's combo hash.
 - **Future Idea:** Add server-side search for the main "Pieces" tab using the existing SQLite database.
+
+---
+
+## Ambitious Avatar Studio Follow-up — 2026-05-12
+
+- Reworked the Dress tab into a cinematic avatar atelier with a large editorial hero, glowing body-zone stage, slot rail, scene picker, and richer copy.
+- Added vibe preset buttons (Minimal, Streetwear, Summer, Night Out, Chaos fit) that auto-pick catalog pieces from local item metadata.
+- Added scene direction to dressing generation payload/prompt so generated looks can target studio, street, loft, runway, or rooftop moods.
+- Replaced the plain generation status with staged progress storytelling, a shimmer skeleton preview card, and toast feedback.
+- Added responsive studio/console/lookbook styling without new dependencies.
