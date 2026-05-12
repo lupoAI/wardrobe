@@ -1,3 +1,4 @@
+import datetime
 import json
 import sqlite3
 from pathlib import Path
@@ -42,6 +43,20 @@ CREATE TABLE IF NOT EXISTS outfit_feedback (
     FOREIGN KEY(outfit_id) REFERENCES outfits(id)
 );
 CREATE INDEX IF NOT EXISTS idx_outfit_feedback_outfit ON outfit_feedback(outfit_id);
+
+CREATE TABLE IF NOT EXISTS wear_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worn_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    worn_date TEXT NOT NULL,
+    item_id TEXT,
+    outfit_id TEXT,
+    note TEXT,
+    FOREIGN KEY(item_id) REFERENCES items(id),
+    FOREIGN KEY(outfit_id) REFERENCES outfits(id)
+);
+CREATE INDEX IF NOT EXISTS idx_wear_log_item ON wear_log(item_id, worn_date);
+CREATE INDEX IF NOT EXISTS idx_wear_log_outfit ON wear_log(outfit_id, worn_date);
+CREATE INDEX IF NOT EXISTS idx_wear_log_date ON wear_log(worn_date DESC);
 """
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
@@ -113,3 +128,85 @@ def insert_outfit_feedback(con: sqlite3.Connection, outfit_id: str, rating: int,
         (outfit_id, rating, reason),
     )
     con.commit()
+
+
+def log_wear(
+    con: sqlite3.Connection,
+    *,
+    item_id: str | None = None,
+    outfit_id: str | None = None,
+    note: str | None = None,
+    worn_date: str | None = None,
+) -> dict:
+    if not item_id and not outfit_id:
+        raise ValueError("item_id or outfit_id required")
+    if worn_date is None:
+        worn_date = datetime.date.today().isoformat()
+    con.execute(
+        "INSERT INTO wear_log(worn_date, item_id, outfit_id, note) VALUES(?, ?, ?, ?)",
+        (worn_date, item_id, outfit_id, note),
+    )
+    con.commit()
+    return {"worn_date": worn_date, "item_id": item_id, "outfit_id": outfit_id, "note": note}
+
+
+def get_wear_stats(
+    con: sqlite3.Connection,
+    *,
+    item_id: str | None = None,
+    outfit_id: str | None = None,
+) -> dict:
+    if item_id:
+        row = con.execute(
+            "SELECT COUNT(*) as count, MAX(worn_date) as last_worn FROM wear_log WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+    elif outfit_id:
+        row = con.execute(
+            "SELECT COUNT(*) as count, MAX(worn_date) as last_worn FROM wear_log WHERE outfit_id = ?",
+            (outfit_id,),
+        ).fetchone()
+    else:
+        raise ValueError("item_id or outfit_id required")
+    return {"wear_count": row["count"], "last_worn": row["last_worn"]}
+
+
+def get_all_item_wear_stats(con: sqlite3.Connection) -> dict[str, dict]:
+    rows = con.execute(
+        "SELECT item_id, COUNT(*) as count, MAX(worn_date) as last_worn"
+        " FROM wear_log WHERE item_id IS NOT NULL GROUP BY item_id"
+    ).fetchall()
+    return {r["item_id"]: {"wear_count": r["count"], "last_worn": r["last_worn"]} for r in rows}
+
+
+def get_all_outfit_wear_stats(con: sqlite3.Connection) -> dict[str, dict]:
+    rows = con.execute(
+        "SELECT outfit_id, COUNT(*) as count, MAX(worn_date) as last_worn"
+        " FROM wear_log WHERE outfit_id IS NOT NULL GROUP BY outfit_id"
+    ).fetchall()
+    return {r["outfit_id"]: {"wear_count": r["count"], "last_worn": r["last_worn"]} for r in rows}
+
+
+def recent_wear(
+    con: sqlite3.Connection,
+    limit: int = 20,
+    *,
+    item_id: str | None = None,
+    outfit_id: str | None = None,
+) -> list[dict]:
+    if item_id:
+        rows = con.execute(
+            "SELECT * FROM wear_log WHERE item_id = ? ORDER BY worn_date DESC, id DESC LIMIT ?",
+            (item_id, limit),
+        ).fetchall()
+    elif outfit_id:
+        rows = con.execute(
+            "SELECT * FROM wear_log WHERE outfit_id = ? ORDER BY worn_date DESC, id DESC LIMIT ?",
+            (outfit_id, limit),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM wear_log ORDER BY worn_date DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
