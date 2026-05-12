@@ -508,37 +508,36 @@ async function generateDressedAvatar(){
     const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
     data=await res.json();
     if(!res.ok) throw new Error(data.error||'Generation failed');
+  }catch(e){
+    status.textContent='Generation failed: '+e.message;
+    return;
+  }finally{ btn.disabled=false; }
+  try{
     renderDressedResult(data, item_ids.length);
     status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
   }catch(e){
-    if(data && data.image_url){
-      status.textContent='Generated and saved, but the preview could not render here. Open image below or reload the page.';
-      try{ renderDressedResult(data, item_ids.length); }catch(_err){}
-    }else{
-      status.textContent='Generation failed: '+e.message;
-    }
-    return;
+    status.textContent='Done — Gemini saved it, but this browser could not draw the preview. Tap Open image below.';
+    renderDressedFallback(data);
   }
-  finally{ btn.disabled=false; }
+}
+function dressedImageUrl(data){
+  const rawUrl=String(data && data.image_url || '');
+  if(!rawUrl) return '';
+  const cacheBust=String(data.combo_hash||Date.now()).replace(/[^a-zA-Z0-9_-]/g,'');
+  return rawUrl+(rawUrl.indexOf('?')>=0?'&':'?')+'v='+cacheBust;
 }
 function renderDressedResult(data, count){
   const results=document.getElementById('dressedResults'); if(!results) return;
-  const rawUrl=String(data.image_url||'');
-  if(!rawUrl) throw new Error('No image URL returned');
-  const cacheBust=String(data.combo_hash||Date.now());
-  const url=rawUrl+(rawUrl.includes('?')?'&':'?')+'v='+encodeURIComponent(cacheBust);
-  const article=document.createElement('article'); article.className='dressed-card';
-  const img=document.createElement('img'); img.setAttribute('src', url); img.setAttribute('alt', 'Dressed avatar');
-  const copy=document.createElement('div'); copy.className='detail-copy';
-  const eyebrow=document.createElement('p'); eyebrow.className='eyebrow'; eyebrow.textContent='Generated look';
-  const title=document.createElement('h2'); title.textContent=String(count)+' selected item'+(count===1?'':'s');
-  const meta=document.createElement('div'); meta.className='meta';
-  const label=document.createElement('b'); label.textContent='Hash';
-  const code=document.createElement('code'); code.textContent=String(data.combo_hash||'');
-  meta.appendChild(label); meta.appendChild(code);
-  const actions=document.createElement('div'); actions.className='actions';
-  const link=document.createElement('a'); link.className='chip active'; link.setAttribute('href', url); link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener'); link.textContent='Open image';
-  actions.appendChild(link); copy.appendChild(eyebrow); copy.appendChild(title); copy.appendChild(meta); copy.appendChild(actions); article.appendChild(img); article.appendChild(copy); results.insertBefore(article, results.firstChild);
+  const url=dressedImageUrl(data);
+  if(!url) throw new Error('No image URL returned');
+  const html=`<article class="dressed-card"><img src="${escapeHtml(url)}" alt="Dressed avatar"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>${String(count)} selected item${count===1?'':'s'}</h2><div class="meta"><b>Hash</b><code>${escapeHtml(data.combo_hash||'')}</code></div><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a></div></div></article>`;
+  results.insertAdjacentHTML('afterbegin', html);
+}
+function renderDressedFallback(data){
+  const results=document.getElementById('dressedResults'); if(!results) return;
+  const url=dressedImageUrl(data) || String(data && data.image_url || '');
+  if(!url) return;
+  results.insertAdjacentHTML('afterbegin', `<article class="dressed-card"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>Preview fallback</h2><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a></div></div></article>`);
 }
 
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
