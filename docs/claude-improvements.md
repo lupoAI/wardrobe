@@ -102,20 +102,28 @@ All tests use `sqlite3.connect(":memory:")` + `executescript(SCHEMA)` — no fil
 - `score_outfit`: range clamping, completeness bonus, shoes bonus, outerwear weather bonus/penalty, neutral palette bonus, pattern-clash penalty, reason list types and ≤5 cap, empty-parts safety
 - `_auto_name`: string output, color/subcategory content, join separator, capped at 3 items
 
-All tests use synthetic item dicts — no catalog, no DB, no network.
+**`tests/test_vision.py`** (22 tests)
+
+- Pure-function coverage for `nearest_color_name`, `visual_tags`, `image_embedding`, and `dominant_colors` using synthetic PIL images.
+
+All tests use synthetic item dicts/images — no catalog, no DB, no network.
 
 ### Test run
 
 ```
-65 passed in 0.17s
+node --check /tmp/wardrobe_claude_web.js
+py_compile wardrobe/web.py wardrobe/db.py wardrobe/outfits.py wardrobe/vision.py
+65 passed in 0.14s
 ```
 
-(43 new + 22 pre-existing vision tests)
+(65 tests total)
 
 ### Files changed
 
+- `tests/__init__.py` (new)
 - `tests/test_db.py` (new)
 - `tests/test_outfits.py` (new)
+- `tests/test_vision.py` (new)
 
 ---
 
@@ -125,7 +133,9 @@ All tests use synthetic item dicts — no catalog, no DB, no network.
 |---|---|
 | `ee8607f` | feat: add dressing room look history — DB table, API, and Recent Looks UI |
 | `cb38395` | test: add test_db and test_outfits covering scoring and DB layer |
-| `(docs)` | docs: add CLAUDE.md and claude-improvements.md |
+| `6ae14b3` | docs: add CLAUDE.md developer guide and claude-improvements changelog |
+| `(follow-up)` | test: add vision coverage from Claude pass |
+| `(follow-up)` | docs: finalize Claude pass validation notes |
 
 ---
 
