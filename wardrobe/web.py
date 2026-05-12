@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .catalog import items
 from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
+from .db import connect, insert_dressed_look, list_dressed_looks
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
 
 
@@ -141,6 +142,18 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
         "provider_output": outputs[0] if outputs else data,
     }
     meta_out.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    try:
+        with connect() as con:
+            insert_dressed_look(con, {
+                "id": f"look_{combo_hash}",
+                "combo_hash": combo_hash,
+                "image_path": str(generated_path),
+                "item_ids": canonical_item_ids,
+                "model": DRESS_MODEL,
+                "elapsed_seconds": meta["elapsed_seconds"],
+            })
+    except Exception:
+        pass  # history tracking is non-critical; generation result still returned
     return meta
 
 
@@ -286,6 +299,13 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
       </div>
       <div id="dresserGrid" class="grid"></div>
       <div id="dressedResults" class="dressed-results"></div>
+      <div id="dressingHistory" class="dressing-history">
+        <div class="history-header">
+          <p class="eyebrow">Session history</p>
+          <h2 class="section-title">Recent looks</h2>
+        </div>
+        <div id="historyGrid" class="history-grid"><div class="empty">Loading recent looks…</div></div>
+      </div>
     </section>
 
     <section id="plannerTab" class="tab-panel">
@@ -354,6 +374,12 @@ dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20
 .wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.dressing-history{margin-top:32px;padding-top:24px;border-top:2px solid var(--line)}.history-header{margin-bottom:16px}
+.history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.history-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:24px;overflow:hidden;box-shadow:0 8px 24px rgba(33,28,20,.10);cursor:default}.history-card img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:#eee9df}.history-card .history-body{padding:12px}
+.history-stamp{color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}.history-restore{margin-top:10px;width:100%;border:1px solid var(--line);border-radius:14px;padding:10px;background:rgba(255,255,255,.72);font:inherit;font-size:13px;font-weight:900;cursor:pointer}.history-restore:hover{background:var(--ink);color:white}
+@media (min-width:600px){.history-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (min-width:900px){.history-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 """
 
 
@@ -426,6 +452,7 @@ async function initDressing(){
   try{
     if(!dressingItems.length){ dressingItems = await (await fetch('/api/items')).json(); }
     renderSlotButtons(); renderSelectedLook(); selectSlot(activeSlot, false);
+    loadDressingHistory();
   }catch(e){
     const status=document.getElementById('dressStatus');
     if(status) status.textContent='Could not load wardrobe items: '+e.message;
@@ -515,6 +542,7 @@ async function generateDressedAvatar(){
   try{
     renderDressedResult(data, item_ids.length);
     status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
+    loadDressingHistory();
   }catch(e){
     status.textContent='Done — Gemini saved it, but this browser could not draw the preview. Tap Open image below.';
     renderDressedFallback(data);
@@ -541,6 +569,36 @@ function renderDressedFallback(data){
 }
 
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+
+async function loadDressingHistory(){
+  const box=document.getElementById('historyGrid'); if(!box) return;
+  box.innerHTML='<div class="empty">Loading recent looks…</div>';
+  try{
+    const looks=await (await fetch('/api/dressing/history?limit=24')).json();
+    box.innerHTML=looks.length?looks.map(renderHistoryCard).join(''):'<div class="empty">No generated looks yet. Build an outfit above and tap "Dress avatar with Gemini".</div>';
+  }catch(e){
+    box.innerHTML='<div class="empty">Could not load look history.</div>';
+  }
+}
+function renderHistoryCard(look){
+  const url=escapeHtml(look.image_url||'');
+  const stamp=look.created_at?new Date(look.created_at.replace('Z','+00:00')).toLocaleString():'';
+  const pills=(look.items||[]).map(i=>`<span class="pill">${escapeHtml(i.subcategory||i.category)}</span>`).join('');
+  const itemIds=JSON.stringify((look.items||[]).map(i=>i.id)).replaceAll('"','&quot;');
+  return `<article class="history-card"><img src="${url}" alt="Generated look" loading="lazy"><div class="history-body"><div class="history-stamp">${escapeHtml(stamp)}</div><div class="pills">${pills}</div><button type="button" class="history-restore" onclick="restoreDressingLook(${itemIds})">Re-dress this look</button></div></article>`;
+}
+function restoreDressingLook(itemIds){
+  const byId=Object.fromEntries(dressingItems.map(i=>[i.id,i]));
+  const next={};
+  for(const id of itemIds){
+    const item=byId[id];
+    if(item && dressingSlots.includes(item.category)) next[item.category]=id;
+  }
+  selectedDressing=next;
+  localStorage.setItem('wardrobeSelectedDressing',JSON.stringify(selectedDressing));
+  renderSelectedLook(); selectSlot(activeSlot,false);
+  document.querySelector('.avatar-stage')?.scrollIntoView({behavior:'smooth',block:'start'});
+}
 """
 
 
@@ -579,6 +637,19 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             self._send_json([_json_outfit(o) for o in outfits]); return
         if parsed.path == "/api/outfits":
             self._send_json([_json_outfit(o) for o in saved_outfits()]); return
+        if parsed.path == "/api/dressing/history":
+            limit = int((query.get("limit") or ["30"])[0])
+            with connect() as con:
+                looks = list_dressed_looks(con, limit=limit)
+            all_items_map = {row["id"]: row for row in items()}
+            result = []
+            for look in looks:
+                out_path = Path(look["image_path"])
+                if not out_path.is_file():
+                    continue
+                resolved = [_json_item(all_items_map[iid]) for iid in look.get("item_ids", []) if iid in all_items_map]
+                result.append({**look, "image_url": _user_asset_url(out_path), "items": resolved})
+            self._send_json(result); return
         if parsed.path.startswith("/user/"):
             self._send_user_asset(unquote(parsed.path.removeprefix("/user/"))); return
         if parsed.path.startswith("/images/"):

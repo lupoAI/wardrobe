@@ -5,6 +5,18 @@ from .config import DB_PATH, DATA_DIR, IMAGE_DIR, EMBEDDING_DIR
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS dressed_looks (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    combo_hash TEXT NOT NULL,
+    image_path TEXT NOT NULL,
+    item_ids_json TEXT NOT NULL,
+    model TEXT,
+    elapsed_seconds REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dressed_combo ON dressed_looks(combo_hash);
+CREATE INDEX IF NOT EXISTS idx_dressed_created ON dressed_looks(created_at);
+
 CREATE TABLE IF NOT EXISTS items (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -113,3 +125,25 @@ def insert_outfit_feedback(con: sqlite3.Connection, outfit_id: str, rating: int,
         (outfit_id, rating, reason),
     )
     con.commit()
+
+
+def insert_dressed_look(con: sqlite3.Connection, look: dict) -> None:
+    con.execute(
+        "INSERT OR IGNORE INTO dressed_looks"
+        "(id, combo_hash, image_path, item_ids_json, model, elapsed_seconds)"
+        " VALUES(:id, :combo_hash, :image_path, :item_ids_json, :model, :elapsed_seconds)",
+        {**look, "item_ids_json": json.dumps(look.get("item_ids", []))},
+    )
+    con.commit()
+
+
+def list_dressed_looks(con: sqlite3.Connection, limit: int = 30) -> list[dict]:
+    rows = con.execute(
+        "SELECT * FROM dressed_looks ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["item_ids"] = json.loads(d.pop("item_ids_json"))
+        out.append(d)
+    return out
