@@ -306,7 +306,16 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
     </section>
 
     <section id="savedTab" class="tab-panel">
-      <div class="planner-card compact"><div><p class="eyebrow">Saved outfits</p><h2 class="section-title">Looks you liked</h2></div><button class="primary ghost" onclick="loadSavedOutfits()">Refresh</button></div>
+      <div class="planner-card compact">
+        <div>
+          <p class="eyebrow">Saved outfits</p>
+          <h2 class="section-title">Looks you liked</h2>
+        </div>
+        <div class="actions">
+          <input type="search" id="savedSearch" placeholder="Filter by item or occasion…" oninput="filterSavedOutfits()" style="padding:10px; border-radius:12px; border:1px solid var(--line); font:inherit;" />
+          <button class="primary ghost" onclick="loadSavedOutfits()">Refresh</button>
+        </div>
+      </div>
       <div id="savedOutfits" class="outfit-list"><div class="empty">No saved outfits yet.</div></div>
     </section>
   </div>
@@ -314,6 +323,7 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
   <dialog id="detail"><button class="close" onclick="detail.close()">×</button><div id="detailBody"></div></dialog>
 
   <script>{JS}</script>
+  <div id="statusToast" class="status-toast"></div>
 </body>
 </html>"""
     return page.encode("utf-8")
@@ -351,7 +361,12 @@ CSS = r"""
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
-.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
+.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24);transform:translateX(-50%) scale(1.15)}.body-hotspot.outer.active{transform:scale(1.15)}.body-hotspot:hover{background:var(--ink);border-color:white}
+.status-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;padding:12px 20px;background:var(--ink);color:white;border-radius:16px;font-weight:900;box-shadow:var(--shadow);display:none;animation:slideUp 0.3s ease-out}
+@keyframes slideUp{from{transform:translate(-50%, 20px);opacity:0}to{transform:translate(-50%, 0);opacity:1}}
+.spinner{display:inline-block;width:18px;height:18px;border:3px solid rgba(255,255,255,.3);border-radius:50%;border-top-color:#fff;animation:spin 1s ease-in-out infinite;margin-right:10px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
 """
@@ -393,10 +408,25 @@ async function loadSuggestions(){
   const outfits=await (await fetch('/api/outfits/suggest?'+params)).json();
   box.innerHTML=outfits.length?outfits.map(o=>renderOutfit(o,true)).join(''):'<div class="empty">No outfits found.</div>';
 }
+let allSavedOutfits = [];
 async function loadSavedOutfits(){
   const box=document.getElementById('savedOutfits'); box.innerHTML='<div class="empty">Loading saved looks…</div>';
-  const outfits=await (await fetch('/api/outfits')).json();
-  box.innerHTML=outfits.length?outfits.map(o=>renderOutfit(o,false)).join(''):'<div class="empty">No saved outfits yet. Save a suggestion first.</div>';
+  try {
+    allSavedOutfits = await (await fetch('/api/outfits')).json();
+    filterSavedOutfits();
+  } catch(e) {
+    box.innerHTML=`<div class="empty">Error loading outfits: ${e.message}</div>`;
+  }
+}
+function filterSavedOutfits(){
+  const q = (document.getElementById('savedSearch')?.value || '').toLowerCase();
+  const box = document.getElementById('savedOutfits');
+  const filtered = allSavedOutfits.filter(o => {
+    if(!q) return true;
+    const haystack = [o.name, o.occasion, o.weather, o.vibe, ...(o.items||[]).map(i => i.notes), ...(o.items||[]).map(i => i.category)].join(' ').toLowerCase();
+    return haystack.includes(q);
+  });
+  box.innerHTML = filtered.length ? filtered.map(o=>renderOutfit(o,false)).join('') : '<div class="empty">No saved outfits match that search.</div>';
 }
 function renderOutfit(o,canSave){
   const imgs=(o.items||[]).map(i=>`<img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${imageFor(i)}" data-original="${i.original_image_url||i.image_url}" data-thumbnail="${i.thumbnail_url||i.image_url}" alt="${escapeHtml(i.notes||i.id)}" onclick="openItem('${i.id}')">`).join('');
@@ -406,16 +436,21 @@ function renderOutfit(o,canSave){
   return `<article class="outfit"><div class="outfit-head"><div class="outfit-title"><h3>${escapeHtml(o.name||autoName(o))}</h3><p>${escapeHtml(o.occasion||'casual')} · ${escapeHtml(o.weather||'mild')} · ${escapeHtml(o.vibe||'balanced')}</p></div><div class="score">${o.score}</div></div><div class="strip ${cls}">${imgs}</div><div class="outfit-body"><ul class="reasons">${reasons}</ul><div class="actions">${canSave?`<button class="save" onclick="saveSuggestion(${itemIds})">Save outfit</button>`:''}<button class="yes" onclick="rate('${escapeHtml(o.id)}',1)">👍 Good</button><button class="no" onclick="rate('${escapeHtml(o.id)}',-1)">👎 No</button></div></div></article>`;
 }
 function autoName(o){return (o.items||[]).map(i=>[(i.colors||[])[0],i.subcategory||i.category].filter(Boolean).join(' ')).slice(0,3).join(' + ')}
+function toast(msg, duration=3000){
+  const t=document.getElementById('statusToast'); if(!t) return;
+  t.textContent=msg; t.style.display='block';
+  setTimeout(()=>{ t.style.display='none'; }, duration);
+}
 async function saveSuggestion(itemIds){
   const payload={item_ids:itemIds,occasion:occasion?.value||'casual',weather:weather?.value||'mild',vibe:vibe?.value||'balanced'};
   const res=await fetch('/api/outfits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  if(!res.ok){ alert('Could not save outfit'); return; }
-  const o=await res.json(); alert('Saved: '+(o.name||o.id));
+  if(!res.ok){ toast('Could not save outfit'); return; }
+  const o=await res.json(); toast('Saved: '+(o.name||o.id));
 }
 async function rate(outfitId,rating){
-  if(outfitId.startsWith('suggestion_')){ alert('Save the outfit first, then ratings become durable.'); return; }
+  if(outfitId.startsWith('suggestion_')){ toast('Save the outfit first!'); return; }
   await fetch('/api/outfits/'+encodeURIComponent(outfitId)+'/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating})});
-  alert(rating>0?'Marked as good':'Marked as not for you');
+  toast(rating>0?'Marked as good':'Marked as not for you');
 }
 
 const dressingSlots = ['tops','outerwear','bottoms','shoes','accessories'];
@@ -427,8 +462,7 @@ async function initDressing(){
     if(!dressingItems.length){ dressingItems = await (await fetch('/api/items')).json(); }
     renderSlotButtons(); renderSelectedLook(); selectSlot(activeSlot, false);
   }catch(e){
-    const status=document.getElementById('dressStatus');
-    if(status) status.textContent='Could not load wardrobe items: '+e.message;
+    toast('Could not load items: '+e.message);
   }
 }
 function selectSlot(slot, persist=true){
@@ -436,7 +470,7 @@ function selectSlot(slot, persist=true){
   if(persist) localStorage.setItem('wardrobeActiveSlot', activeSlot);
   renderSlotButtons(); updateActiveHotspots();
   const title=document.getElementById('pickerTitle'); if(title) title.textContent='Choose '+slotLabel(activeSlot).toLowerCase();
-  const help=document.getElementById('pickerHelp'); if(help) help.textContent=`These are ${slotLabel(activeSlot)} pieces. Tap a card below to assign it to the active slot.`;
+  const help=document.getElementById('pickerHelp'); if(help) help.textContent=`Pick ${slotLabel(activeSlot)} from your catalog below.`;
   const rows=dressingItems.filter(i=>i.category===activeSlot);
   const grid=document.getElementById('dresserGrid'); if(!grid) return;
   grid.innerHTML = rows.length ? rows.map(renderDresserChoice).join('') : '<div class="empty">No pieces in this slot.</div>';
@@ -446,7 +480,12 @@ function selectSlot(slot, persist=true){
 }
 function updateActiveHotspots(){
   document.querySelectorAll('.body-hotspot[data-slot]').forEach(b=>{
-    const on=b.dataset.slot===activeSlot; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on?'true':'false');
+    const on=b.dataset.slot===activeSlot; 
+    b.classList.toggle('active', on); 
+    b.setAttribute('aria-pressed', on?'true':'false');
+  });
+  document.querySelectorAll('.selected-slot[data-slot]').forEach(s=>{
+    s.classList.toggle('active', s.dataset.slot===activeSlot);
   });
 }
 function slotLabel(slot){return ({tops:'Top',outerwear:'Outerwear',bottoms:'Bottom',shoes:'Shoes',accessories:'Accessories'}[slot]||slot)}
@@ -480,10 +519,10 @@ function renderSelectedLook(){
   box.innerHTML=dressingSlots.map(slot=>{
     const item=byId[selectedDressing[slot]];
     const active=slot===activeSlot;
-    if(!item) return `<div class="selected-slot ${active?'active':''}"><div></div><div><b>${slotLabel(slot)}</b><small>${active?'Active slot — pick from the grid below':'Not selected'}</small></div><button type="button" data-slot="${slot}">Pick</button></div>`;
+    if(!item) return `<div class="selected-slot ${active?'active':''}" data-slot="${slot}"><div></div><div><b>${slotLabel(slot)}</b><small>${active?'Active slot — pick below':'Not selected'}</small></div><button type="button" data-slot="${slot}">Pick</button></div>`;
     const original=item.original_image_url||item.image_url;
     const thumbnail=item.thumbnail_url||item.image_url;
-    return `<div class="selected-slot ${active?'active':''}"><img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${imageFor(item)}" data-original="${original}" data-thumbnail="${thumbnail}" alt=""><div><b>${slotLabel(slot)}</b><small>${escapeHtml(item.subcategory||item.category)}</small><span>${escapeHtml(item.notes||item.id)}</span></div><button type="button" data-slot="${slot}">Change</button></div>`;
+    return `<div class="selected-slot ${active?'active':''}" data-slot="${slot}"><img class="wardrobe-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${imageFor(item)}" data-original="${original}" data-thumbnail="${thumbnail}" alt=""><div><b>${slotLabel(slot)}</b><small>${escapeHtml(item.subcategory||item.category)}</small><span>${escapeHtml(item.notes||item.id)}</span></div><button type="button" data-slot="${slot}">Change</button></div>`;
   }).join('');
 }
 document.addEventListener('click', (event)=>{
@@ -499,25 +538,26 @@ document.addEventListener('keydown', (event)=>{
 });
 async function generateDressedAvatar(){
   const item_ids=dressingSlots.map(s=>selectedDressing[s]).filter(Boolean);
-  if(!item_ids.length){ alert('Pick at least one clothing item first.'); return; }
+  if(!item_ids.length){ toast('Pick at least one item first.'); return; }
   const status=document.getElementById('dressStatus');
   const btn=document.getElementById('generateDressed');
-  status.textContent='Sending avatar + original garment photos to Gemini Flash…'; btn.disabled=true;
+  const oldText = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  btn.disabled=true; status.textContent='Calling Gemini Flash...';
   let data=null;
   try{
     const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
     data=await res.json();
     if(!res.ok) throw new Error(data.error||'Generation failed');
-  }catch(e){
-    status.textContent='Generation failed: '+e.message;
-    return;
-  }finally{ btn.disabled=false; }
-  try{
     renderDressedResult(data, item_ids.length);
+    toast('Look generated!');
     status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
   }catch(e){
-    status.textContent='Done — Gemini saved it, but this browser could not draw the preview. Tap Open image below.';
-    renderDressedFallback(data);
+    toast('Generation failed');
+    status.textContent='Error: '+e.message;
+  }finally{ 
+    btn.disabled=false; 
+    btn.innerHTML = oldText;
   }
 }
 function dressedImageUrl(data){
