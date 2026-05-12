@@ -6,6 +6,9 @@ import hashlib
 import json
 import mimetypes
 import os
+import tempfile
+from email.parser import BytesParser
+from email.policy import default as email_policy
 import socket
 import subprocess
 import time
@@ -13,8 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .catalog import items
-from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
+from .catalog import add_item, items, update_item
+from .config import DATA_DIR, IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
 
 
@@ -192,6 +195,77 @@ def _json_outfit(outfit: dict) -> dict:
     return {**outfit, "items": [_json_item(item) for item in outfit.get("items", [])]}
 
 
+def _split_csv(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def _clean_item_payload(payload: dict) -> dict:
+    changes: dict = {}
+    for key in ("category", "subcategory", "notes"):
+        if key in payload:
+            text = str(payload.get(key) or "").strip()
+            changes[key] = text or None
+    if "colors" in payload:
+        changes["colors"] = _split_csv(payload.get("colors"))
+    if "tags" in payload:
+        changes["tags"] = _split_csv(payload.get("tags"))
+    return changes
+
+
+def _parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, object]]:
+    message = BytesParser(policy=email_policy).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
+    )
+    fields: dict[str, str] = {}
+    file_info: dict[str, object] = {}
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        data = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        if filename:
+            file_info = {"field": name, "filename": filename, "content": data}
+        else:
+            fields[name] = data.decode(part.get_content_charset() or "utf-8", errors="replace")
+    return fields, file_info
+
+
+def _create_item_from_upload(content_type: str, body: bytes) -> dict:
+    fields, file_info = _parse_multipart(content_type, body)
+    if not file_info:
+        raise ValueError("Upload requires an image file")
+    raw = file_info["content"]
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError("Uploaded image was empty")
+    if len(raw) > 12 * 1024 * 1024:
+        raise ValueError("Uploaded image is too large; keep it under 12MB")
+    filename = str(file_info.get("filename") or "upload.jpg")
+    suffix = Path(filename).suffix.lower() or ".jpg"
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise ValueError("Upload must be a JPG, PNG, or WEBP image")
+    upload_dir = DATA_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=upload_dir) as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+    try:
+        return add_item(
+            tmp_path,
+            category=fields.get("category") or None,
+            notes=fields.get("notes") or None,
+        )
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
 def _render_page(query: dict[str, list[str]]) -> bytes:
     all_rows = items()
     rows = _filtered_items(query)
@@ -237,6 +311,14 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
         <input type="search" name="q" value="{html.escape(q)}" placeholder="Search color, tag, item id…" autocomplete="off" />
         {f'<input type="hidden" name="category" value="{html.escape(selected)}" />' if selected else ''}
         <button>Search</button>
+      </form>
+      <form id="uploadForm" class="upload-card" onsubmit="uploadItem(event)">
+        <div><p class="eyebrow">Add piece</p><h2 class="section-title">Upload from the app</h2><p class="help">Drop in a clothing photo, pick a category, and edit the details after upload.</p></div>
+        <input type="file" name="image" accept="image/jpeg,image/png,image/webp" required />
+        <select name="category" aria-label="Category"><option value="">Auto category</option><option>tops</option><option>bottoms</option><option>outerwear</option><option>shoes</option><option>accessories</option><option>underwear</option></select>
+        <input name="notes" placeholder="Notes, e.g. navy wool blazer" />
+        <button class="primary">Add item</button>
+        <p id="uploadStatus" class="form-status"></p>
       </form>
       <div class="view-toggle" role="group" aria-label="Image view mode">
         <span>Images</span>
@@ -350,6 +432,7 @@ CSS = r"""
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:26px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10);cursor:pointer;transition:transform .18s ease}.card:active{transform:scale(.985)}.photo{aspect-ratio:4/5;background:#e8dfd2;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}.card-copy{padding:12px}.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.type{color:var(--accent2);text-transform:capitalize;font-size:12px;font-weight:900}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted)}h2{margin:7px 0 10px;font-size:14px;line-height:1.18;letter-spacing:-.02em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.pills{display:flex;flex-wrap:wrap;gap:5px}.pills.muted{margin-top:7px;opacity:.72}.pill,.swatch{display:inline-flex;align-items:center;min-height:24px;padding:5px 8px;border-radius:999px;background:rgba(23,22,19,.07);font-size:11px;font-weight:800;color:#3a352e}.swatch{background:rgba(198,122,69,.13)}.empty{padding:42px 16px;border:1px dashed var(--line);border-radius:24px;text-align:center;color:var(--muted);font-weight:800;grid-column:1/-1}
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
+.upload-card{display:grid;grid-template-columns:1fr;gap:10px;margin:12px 0 4px;padding:14px;border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:24px;box-shadow:var(--shadow)}.upload-card input,.upload-card select,.edit-form input,.edit-form textarea{width:100%;border:1px solid var(--line);background:var(--strong);border-radius:14px;padding:12px;font:inherit;color:var(--ink)}.upload-card input[type=file]{background:rgba(255,255,255,.56)}.form-status{margin:0;color:var(--muted);font-weight:850}.edit-form{display:grid;gap:10px;margin-top:16px}.edit-form label{display:grid;gap:5px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}.edit-form textarea{min-height:86px;resize:vertical;text-transform:none;letter-spacing:0}.edit-actions{display:flex;gap:8px;flex-wrap:wrap}.toast{position:fixed;left:50%;bottom:22px;z-index:30;transform:translate(-50%,20px);opacity:0;pointer-events:none;background:rgba(23,22,19,.92);color:#fff;border-radius:999px;padding:12px 16px;font-weight:900;box-shadow:0 18px 60px rgba(0,0,0,.28);transition:.2s ease}.toast.show{opacity:1;transform:translate(-50%,0)}@media (min-width:760px){.upload-card{grid-template-columns:1.3fr .9fr .7fr 1fr auto;align-items:end}.upload-card .form-status{grid-column:1/-1}}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
 .wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -384,9 +467,10 @@ async function openItem(id){
   const chips=(item.tags||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('');
   const colors=(item.colors||[]).map(t=>`<span class="swatch">${escapeHtml(t)}</span>`).join('');
   const detailImg=imageFor(item);
-  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
+  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div><form class="edit-form" onsubmit="saveItemEdits(event,'${escapeHtml(item.id)}')"><label>Category<input name="category" value="${escapeHtml(item.category||'')}"></label><label>Subcategory<input name="subcategory" value="${escapeHtml(item.subcategory||'')}"></label><label>Colors, comma separated<input name="colors" value="${escapeHtml((item.colors||[]).join(', '))}"></label><label>Tags, comma separated<input name="tags" value="${escapeHtml((item.tags||[]).join(', '))}"></label><label>Notes<textarea name="notes">${escapeHtml(item.notes||'')}</textarea></label><div class="edit-actions"><button class="primary" type="submit">Save details</button><button class="primary ghost" type="button" onclick="detail.close()">Close</button></div><p class="form-status" id="editStatus"></p></form></div>`;
   detail.showModal();
 }
+
 async function loadSuggestions(){
   const params=new URLSearchParams({occasion:occasion.value,weather:weather.value,vibe:vibe.value,limit:'12'});
   const box=document.getElementById('suggestions'); box.innerHTML='<div class="empty">Scoring combinations…</div>';
@@ -540,6 +624,39 @@ function renderDressedFallback(data){
   results.insertAdjacentHTML('afterbegin', `<article class="dressed-card"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>Preview fallback</h2><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a></div></div></article>`);
 }
 
+function showToast(msg){
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; el.className='toast'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('show'); clearTimeout(window.__toastTimer); window.__toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+}
+async function uploadItem(event){
+  event.preventDefault();
+  const form=event.currentTarget; const status=document.getElementById('uploadStatus');
+  status.textContent='Uploading and indexing…';
+  const btn=form.querySelector('button'); btn.disabled=true;
+  try{
+    const res=await fetch('/api/items/upload',{method:'POST',body:new FormData(form)});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Upload failed');
+    status.textContent='Added '+data.id+'. Refreshing…'; showToast('Item added');
+    setTimeout(()=>location.href='/',450);
+  }catch(e){ status.textContent='Upload failed: '+e.message; }
+  finally{ btn.disabled=false; }
+}
+async function saveItemEdits(event,id){
+  event.preventDefault();
+  const form=event.currentTarget; const status=document.getElementById('editStatus');
+  const payload=Object.fromEntries(new FormData(form).entries());
+  status.textContent='Saving…';
+  try{
+    const res=await fetch('/api/items/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Save failed');
+    status.textContent='Saved.'; showToast('Item details updated');
+    setTimeout(()=>location.reload(),450);
+  }catch(e){ status.textContent='Save failed: '+e.message; }
+}
+
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 """
 
@@ -590,7 +707,12 @@ class WardrobeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/items/upload":
+                self._send_json(_json_item(_create_item_from_upload(self.headers.get("Content-Type") or "", self._read_body())), status=201); return
             payload = self._read_json()
+            if parsed.path.startswith("/api/items/"):
+                item_id = unquote(parsed.path.removeprefix("/api/items/"))
+                self._send_json(_json_item(update_item(item_id, **_clean_item_payload(payload)))); return
             if parsed.path == "/api/outfits":
                 outfit = save_outfit(
                     item_ids=payload.get("item_ids") or [],
@@ -611,11 +733,15 @@ class WardrobeHandler(BaseHTTPRequestHandler):
         except Exception as e:  # small local tool; surface useful errors
             self._send_json({"error": str(e)}, status=400)
 
-    def _read_json(self) -> dict:
+    def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
-        if not length:
+        return self.rfile.read(length) if length else b""
+
+    def _read_json(self) -> dict:
+        body = self._read_body()
+        if not body:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return json.loads(body.decode("utf-8"))
 
     def _send_image(self, rel: str) -> None:
         self._send_file_from(IMAGE_DIR, rel)

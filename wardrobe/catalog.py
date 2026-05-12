@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 import numpy as np
 from .config import IMAGE_DIR, EMBEDDING_DIR, CATEGORIES
-from .db import connect, insert_item, list_items
+from .db import connect, insert_item, list_items, update_item_metadata
 from .vision import load_image, dominant_colors, visual_tags, image_embedding
 
 def infer_category(filename: str, user_category: str | None = None) -> tuple[str, str | None]:
@@ -59,6 +59,11 @@ def add_item(image_path: str | Path, category: str | None = None, notes: str | N
 def items(category: str | None = None) -> list[dict]:
     with connect() as con:
         return list_items(con, category)
+
+
+def update_item(item_id: str, **changes) -> dict:
+    with connect() as con:
+        return update_item_metadata(con, item_id, changes)
 
 def similar(image_path: str | Path | None = None, item_id: str | None = None, limit: int = 5) -> list[dict]:
     rows = items()
