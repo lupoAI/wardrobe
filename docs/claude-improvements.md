@@ -148,3 +148,13 @@ py_compile wardrobe/web.py wardrobe/db.py wardrobe/outfits.py wardrobe/vision.py
 5. **Replace `alert()` calls** — The `saveSuggestion` and `rate` JS functions still use `alert()` / `alert()`. Replace with inline toast/status messages (noted in the existing UX review).
 6. **Pagination / infinite scroll** — History is currently capped at 24 items; add load-more or pagination for users with many generations.
 7. **Look sharing** — Export a history card as a PNG composite (dressed image + item strip) for sharing.
+
+---
+
+## Ambitious Avatar Studio Follow-up — 2026-05-12
+
+- Reworked the Dress tab into a cinematic avatar atelier with a large editorial hero, glowing body-zone stage, slot rail, scene picker, and richer copy.
+- Added vibe preset buttons (Minimal, Streetwear, Summer, Night Out, Chaos fit) that auto-pick catalog pieces from local item metadata.
+- Added scene direction to dressing generation payload/prompt so generated looks can target studio, street, loft, runway, or rooftop moods.
+- Replaced the plain generation status with staged progress storytelling, a shimmer skeleton preview card, and toast feedback.
+- Added responsive studio/console/lookbook styling without new dependencies.
