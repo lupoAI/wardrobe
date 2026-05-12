@@ -61,7 +61,7 @@ def _avatar_url() -> str:
     return _user_asset_url(BASE_AVATAR_PATH)
 
 
-def _dress_prompt(selected: list[dict]) -> str:
+def _dress_prompt(selected: list[dict], scene: str = "Neutral Studio") -> str:
     garments = "\n".join(
         f"- {row.get('category')}/{row.get('subcategory') or 'item'}: {row.get('notes') or row['id']}"
         for row in selected
@@ -73,16 +73,18 @@ Inputs: the first image is the base avatar. Every following image is a real clot
 Selected garments:
 {garments}
 
+Scene direction: {scene}
+
 Requirements:
 - Preserve the avatar identity, face, body proportions, neutral forward-facing pose, and full-body framing.
 - Dress the avatar naturally with the selected garments only. Match each garment's real color, material, silhouette, neckline/waist/opening shape, hems, shoes, texture, and distinctive details from the original photos.
 - Layer clothing realistically: outerwear over tops, bottoms at waist/legs, shoes on feet, accessories only if selected.
-- Keep a clean neutral fitting-room/avatar look with plain neutral light grey background and soft studio lighting.
+- Use the selected scene as subtle editorial styling/lighting direction while keeping the avatar full-body and the clothes easy to inspect.
 - No extra people, mannequins, hangers, mirror, phone, text, logos unless actually present on the garment, UI, frame, or decorative background.
 - Non-sexualized, realistic anatomy, no pose change beyond tiny natural clothing fit adjustments."""
 
 
-def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
+def _run_dress_generation(item_ids: list[str], scene: str = "Neutral Studio", timeout: int = 240) -> dict:
     DRESSED_DIR.mkdir(parents=True, exist_ok=True)
     all_items = {row["id"]: row for row in items()}
     selected = [all_items[item_id] for item_id in item_ids if item_id in all_items]
@@ -103,7 +105,7 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
             return meta
         except (OSError, json.JSONDecodeError):
             pass
-    prompt = _dress_prompt(selected)
+    prompt = _dress_prompt(selected, scene)
     cmd = [
         "openclaw", "infer", "image", "edit",
         "--file", str(BASE_AVATAR_PATH),
@@ -140,6 +142,7 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
         "elapsed_seconds": round(time.time() - started, 2),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "provider_output": outputs[0] if outputs else data,
+        "scene_direction": scene,
     }
     meta_out.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     try:
@@ -261,9 +264,19 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
     </section>
 
     <section id="dressingTab" class="tab-panel">
-      <div class="dressing-room">
-        <div class="avatar-stage">
-          <div class="avatar-hint">Tap a body area → choose clothes below</div>
+      <div class="studio-marquee">
+        <div>
+          <p class="eyebrow">Avatar atelier</p>
+          <h2 class="studio-title">Style Salo like a playable character.</h2>
+          <p class="studio-copy">Pick a vibe, choose a scene, tap the body map, then generate a polished avatar look with real wardrobe pieces.</p>
+        </div>
+        <div class="studio-badges"><span>Live closet</span><span>AI try-on</span><span>Lookbook</span></div>
+      </div>
+      <div class="dressing-room studio-mode">
+        <div class="avatar-stage cinematic" data-scene="Neutral Studio">
+          <div class="stage-orbit one"></div><div class="stage-orbit two"></div>
+          <div class="avatar-hint">Tap the glowing body zones or use the slot rail →</div>
+          <div class="stage-floor"></div>
           <img id="avatarBase" class="avatar-base" src="{html.escape(_avatar_url())}" alt="Neutral avatar" />
           <button type="button" class="body-hotspot head" data-slot="accessories" aria-pressed="false">Accessories</button>
           <button type="button" class="body-hotspot torso" data-slot="tops" aria-pressed="false">Top</button>
@@ -271,20 +284,29 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
           <button type="button" class="body-hotspot legs" data-slot="bottoms" aria-pressed="false">Bottom</button>
           <button type="button" class="body-hotspot feet" data-slot="shoes" aria-pressed="false">Shoes</button>
         </div>
-        <aside class="dresser-panel">
-          <p class="eyebrow">Character dressing</p>
+        <aside class="dresser-panel studio-console">
+          <p class="eyebrow">Creative direction</p>
           <h2 class="section-title">Build the look</h2>
-          <p class="help">1. Tap the avatar area you want to dress. 2. Pick the clothing card below. 3. Generate the final try-on image.</p>
+          <p class="help">Start with a vibe preset, then refine each slot. The generation prompt now includes the selected scene direction.</p>
+          <div class="vibe-deck" aria-label="Vibe presets">
+            <button type="button" onclick="applyVibe('Minimal')">Minimal</button>
+            <button type="button" onclick="applyVibe('Streetwear')">Streetwear</button>
+            <button type="button" onclick="applyVibe('Summer')">Summer</button>
+            <button type="button" onclick="applyVibe('Night Out')">Night Out</button>
+            <button type="button" onclick="applyVibe('Random')">Chaos fit</button>
+          </div>
+          <label class="scene-picker">Scene<select id="sceneSelect" onchange="setScene(this.value)"><option>Neutral Studio</option><option>Tokyo street night</option><option>Soft editorial loft</option><option>Runway spotlight</option><option>Sunset rooftop</option></select></label>
           <div id="slotButtons" class="slot-buttons"></div>
           <p id="slotCount" class="slot-count">0 of 5 slots filled</p>
-          <div id="selectedLook" class="selected-look"></div>
-          <button id="generateDressed" type="button" class="primary wide" onclick="generateDressedAvatar()">Dress avatar with Gemini</button>
+          <div id="selectedLook" class="selected-look look-rail"></div>
+          <button id="generateDressed" type="button" class="primary wide glow-cta" onclick="generateDressedAvatar()">Generate avatar look</button>
           <div id="dressStatus" class="dress-status"></div>
+          <div id="dressProgress" class="progress-story" aria-live="polite"></div>
         </aside>
       </div>
-      <div class="picker-head">
+      <div class="picker-head atelier-picker">
         <div>
-          <p class="eyebrow">Picker below</p>
+          <p class="eyebrow">Casting rack</p>
           <h2 class="section-title" id="pickerTitle">Choose a top</h2>
           <p id="pickerHelp" class="picker-help">These are Top pieces. Tap a card to assign it to the active slot.</p>
         </div>
@@ -297,12 +319,12 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
           <button type="button" class="primary ghost" onclick="clearDressingSlot()">Clear slot</button>
         </div>
       </div>
-      <div id="dresserGrid" class="grid"></div>
-      <div id="dressedResults" class="dressed-results"></div>
-      <div id="dressingHistory" class="dressing-history">
+      <div id="dresserGrid" class="grid casting-grid"></div>
+      <div id="dressedResults" class="dressed-results runway-results"></div>
+      <div id="dressingHistory" class="dressing-history lookbook-history">
         <div class="history-header">
-          <p class="eyebrow">Session history</p>
-          <h2 class="section-title">Recent looks</h2>
+          <p class="eyebrow">Lookbook archive</p>
+          <h2 class="section-title">Recent generated looks</h2>
         </div>
         <div id="historyGrid" class="history-grid"><div class="empty">Loading recent looks…</div></div>
       </div>
@@ -334,6 +356,7 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
   <dialog id="detail"><button class="close" onclick="detail.close()">×</button><div id="detailBody"></div></dialog>
 
   <script>{JS}</script>
+  <div id="statusToast" class="status-toast"></div>
 </body>
 </html>"""
     return page.encode("utf-8")
@@ -380,6 +403,9 @@ dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20
 .history-stamp{color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}.history-restore{margin-top:10px;width:100%;border:1px solid var(--line);border-radius:14px;padding:10px;background:rgba(255,255,255,.72);font:inherit;font-size:13px;font-weight:900;cursor:pointer}.history-restore:hover{background:var(--ink);color:white}
 @media (min-width:600px){.history-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (min-width:900px){.history-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+/* Ambitious avatar studio pass */
+.studio-marquee{display:grid;gap:18px;margin:8px 0 16px;padding:22px;border:1px solid rgba(255,255,255,.35);border-radius:34px;background:linear-gradient(135deg,rgba(17,24,39,.96),rgba(68,28,93,.88) 48%,rgba(198,122,69,.88));color:white;box-shadow:0 28px 80px rgba(35,18,53,.28);overflow:hidden;position:relative}.studio-marquee:after{content:"";position:absolute;inset:-40%;background:radial-gradient(circle,rgba(255,255,255,.20),transparent 28%);transform:translate(45%,-35%)}.studio-marquee>*{position:relative;z-index:1}.studio-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0;font-size:clamp(34px,8vw,76px);line-height:.88;letter-spacing:-.07em}.studio-copy{max-width:720px;margin:14px 0 0;color:rgba(255,255,255,.78);font-weight:750}.studio-badges{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.studio-badges span{border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.13);border-radius:999px;padding:9px 12px;font-size:12px;font-weight:1000;text-transform:uppercase;letter-spacing:.08em}.studio-mode{align-items:stretch}.avatar-stage.cinematic{isolation:isolate;background:radial-gradient(circle at 50% 18%,rgba(255,255,255,.98),rgba(255,255,255,.20) 24%,transparent 42%),linear-gradient(160deg,#1d1230,#2f2442 48%,#c67a45);border-color:rgba(255,255,255,.32);box-shadow:0 32px 100px rgba(37,25,57,.35);transition:background .35s ease}.avatar-stage.cinematic[data-scene*="Tokyo"]{background:radial-gradient(circle at 50% 15%,rgba(0,245,255,.32),transparent 28%),linear-gradient(160deg,#0c1024,#29164f 52%,#ff2d75)}.avatar-stage.cinematic[data-scene*="loft"]{background:radial-gradient(circle at 50% 14%,rgba(255,255,255,.9),transparent 34%),linear-gradient(160deg,#efe4d3,#d2b697 56%,#70573f)}.avatar-stage.cinematic[data-scene*="Runway"]{background:radial-gradient(circle at 50% 2%,rgba(255,255,255,1),transparent 24%),linear-gradient(160deg,#09090b,#222 62%,#6d28d9)}.avatar-stage.cinematic[data-scene*="rooftop"]{background:radial-gradient(circle at 72% 14%,rgba(255,214,102,.85),transparent 22%),linear-gradient(160deg,#432371,#ff7f50 58%,#ffd166)}.stage-orbit{position:absolute;z-index:0;border-radius:50%;border:1px solid rgba(255,255,255,.24);filter:blur(.2px);animation:orbit 16s linear infinite}.stage-orbit.one{width:72%;aspect-ratio:1;transform:rotateX(72deg);bottom:13%}.stage-orbit.two{width:48%;aspect-ratio:1;transform:rotateX(70deg);bottom:23%;animation-duration:11s}.stage-floor{position:absolute;z-index:0;bottom:6%;width:62%;height:18%;border-radius:50%;background:radial-gradient(ellipse,rgba(0,0,0,.30),transparent 70%);filter:blur(10px)}.avatar-stage.cinematic .avatar-base{z-index:1;filter:drop-shadow(0 30px 35px rgba(0,0,0,.42)) saturate(1.04)}.avatar-stage.cinematic .avatar-hint{left:18px;right:auto;max-width:320px;text-align:left;background:rgba(17,24,39,.68);color:white;border-color:rgba(255,255,255,.24)}.studio-console{background:linear-gradient(180deg,rgba(255,255,255,.86),rgba(255,255,255,.58));border-color:rgba(255,255,255,.56)}.vibe-deck{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:14px 0}.vibe-deck button,.scene-picker select{border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.72);padding:12px;font:inherit;font-weight:950;color:var(--ink);box-shadow:0 10px 24px rgba(33,28,20,.08)}.vibe-deck button:hover{transform:translateY(-1px);background:var(--ink);color:white}.scene-picker{display:grid;gap:6px;margin:8px 0 12px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:1000}.scene-picker select{width:100%;text-transform:none;letter-spacing:0;color:var(--ink)}.glow-cta{background:linear-gradient(135deg,#111827,#6d28d9 52%,#c67a45);box-shadow:0 14px 34px rgba(109,40,217,.32)}.progress-story{min-height:24px;margin-top:10px;font-weight:950;color:#6d28d9}.progress-story.active:before{content:"";display:inline-block;width:9px;height:9px;margin-right:8px;border-radius:50%;background:#6d28d9;box-shadow:0 0 0 0 rgba(109,40,217,.45);animation:pulse 1.25s infinite}.look-rail .selected-slot{border-radius:20px;background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(255,255,255,.48))}.look-rail .selected-slot.active{box-shadow:0 0 0 4px rgba(109,40,217,.13);border-color:rgba(109,40,217,.48)}.atelier-picker{border-color:rgba(109,40,217,.18)}.casting-grid .dresser-choice{position:relative}.casting-grid .dresser-choice.selected{outline:0;box-shadow:0 0 0 4px rgba(109,40,217,.18),0 18px 45px rgba(33,28,20,.16)}.casting-grid .dresser-choice.selected:before{content:"Selected";position:absolute;z-index:2;top:10px;right:10px;border-radius:999px;background:#6d28d9;color:white;padding:7px 10px;font-size:11px;font-weight:1000}.runway-results{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}.runway-results .dressed-card{background:#111827;color:white}.runway-results .dressed-card .meta b,.runway-results .dressed-card .eyebrow{color:rgba(255,255,255,.6)}.skeleton-card{overflow:hidden}.skeleton-img{background:linear-gradient(90deg,rgba(255,255,255,.18),rgba(255,255,255,.54),rgba(255,255,255,.18));background-size:220% 100%;animation:shimmer 1.4s linear infinite}.status-toast{position:fixed;left:50%;bottom:22px;z-index:20;transform:translate(-50%,24px);opacity:0;pointer-events:none;padding:12px 16px;border-radius:999px;background:rgba(17,24,39,.92);color:white;font-weight:950;box-shadow:0 18px 50px rgba(0,0,0,.26);transition:.22s ease}.status-toast.show{opacity:1;transform:translate(-50%,0)}@keyframes shimmer{to{background-position:-220% 0}}@keyframes pulse{70%{box-shadow:0 0 0 10px rgba(109,40,217,0)}}@keyframes orbit{to{rotate:360deg}}@media (min-width:900px){.studio-marquee{grid-template-columns:1fr auto;align-items:end}.vibe-deck{grid-template-columns:repeat(5,minmax(0,1fr))}.studio-console{position:sticky;top:92px;align-self:start}}
+
 """
 
 
@@ -526,28 +552,36 @@ document.addEventListener('keydown', (event)=>{
 });
 async function generateDressedAvatar(){
   const item_ids=dressingSlots.map(s=>selectedDressing[s]).filter(Boolean);
-  if(!item_ids.length){ alert('Pick at least one clothing item first.'); return; }
+  if(!item_ids.length){ toast('Pick at least one clothing item first.'); return; }
+  const scene=document.getElementById('sceneSelect')?.value||'Neutral Studio';
   const status=document.getElementById('dressStatus');
+  const progress=document.getElementById('dressProgress');
   const btn=document.getElementById('generateDressed');
-  status.textContent='Sending avatar + original garment photos to Gemini Flash…'; btn.disabled=true;
-  let data=null;
+  const old=btn.innerHTML; btn.innerHTML='Styling…'; btn.disabled=true;
+  const stages=['Reading garment silhouettes','Composing '+scene,'Checking layers and proportions','Rendering final avatar look'];
+  let idx=0; if(status) status.textContent='Sending avatar + garment references to Gemini…';
+  if(progress){ progress.classList.add('active'); progress.textContent=stages[0]; }
+  const timer=setInterval(()=>{ idx=Math.min(idx+1,stages.length-1); if(progress) progress.textContent=stages[idx]; },3600);
+  const results=document.getElementById('dressedResults');
+  if(results) results.insertAdjacentHTML('afterbegin','<article class="dressed-card skeleton-card" id="generatingSkeleton"><div class="photo skeleton-img" style="aspect-ratio:2/3"></div><div class="detail-copy"><p class="eyebrow">Generating</p><h2>Building the look…</h2></div></article>');
   try{
-    const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
-    data=await res.json();
+    const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids,scene})});
+    const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Generation failed');
-  }catch(e){
-    status.textContent='Generation failed: '+e.message;
-    return;
-  }finally{ btn.disabled=false; }
-  try{
+    document.getElementById('generatingSkeleton')?.remove();
     renderDressedResult(data, item_ids.length);
-    status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
-    loadDressingHistory();
+    if(status) status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
+    if(progress){ progress.classList.remove('active'); progress.textContent='✨ Lookbook updated'; }
+    if(typeof loadDressingHistory==='function') loadDressingHistory();
+    toast('Avatar look generated');
   }catch(e){
-    status.textContent='Done — Gemini saved it, but this browser could not draw the preview. Tap Open image below.';
-    renderDressedFallback(data);
-  }
+    document.getElementById('generatingSkeleton')?.remove();
+    if(status) status.textContent='Generation failed: '+e.message;
+    if(progress){ progress.classList.remove('active'); progress.textContent=''; }
+    toast('Generation failed');
+  }finally{ clearInterval(timer); btn.disabled=false; btn.innerHTML=old; }
 }
+
 function dressedImageUrl(data){
   const rawUrl=String(data && data.image_url || '');
   if(!rawUrl) return '';
@@ -599,6 +633,47 @@ function restoreDressingLook(itemIds){
   renderSelectedLook(); selectSlot(activeSlot,false);
   document.querySelector('.avatar-stage')?.scrollIntoView({behavior:'smooth',block:'start'});
 }
+
+const vibeKeywords={
+  Minimal:['black','white','grey','gray','navy','plain','solid','minimal','simple'],
+  Streetwear:['hoodie','sneaker','graphic','oversized','cargo','denim','black','tee'],
+  Summer:['shorts','linen','tank','sandal','white','blue','light','cotton'],
+  'Night Out':['black','leather','boot','silk','dark','jacket','shirt','smart']
+};
+function toast(msg){
+  let el=document.getElementById('statusToast');
+  if(!el){ el=document.createElement('div'); el.id='statusToast'; el.className='status-toast'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('show'); clearTimeout(window.__toastTimer); window.__toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+}
+function itemText(item){return [item.notes,item.subcategory,item.category,...(item.colors||[]),...(item.tags||[])].join(' ').toLowerCase();}
+function applyVibe(vibe){
+  if(!dressingItems.length){ toast('Open Dress first so I can load the closet.'); return; }
+  const next={};
+  dressingSlots.forEach(slot=>{
+    const rows=dressingItems.filter(i=>i.category===slot);
+    if(!rows.length) return;
+    if(vibe==='Random'){
+      if(Math.random()>.25) next[slot]=rows[Math.floor(Math.random()*rows.length)].id;
+      return;
+    }
+    const keys=vibeKeywords[vibe]||[];
+    const ranked=rows.map(item=>({item,score:keys.reduce((n,k)=>n+(itemText(item).includes(k)?1:0),0)+Math.random()*.35})).sort((a,b)=>b.score-a.score);
+    if(ranked[0] && (ranked[0].score>.3 || slot==='tops' || slot==='bottoms')) next[slot]=ranked[0].item.id;
+  });
+  selectedDressing=next; localStorage.setItem('wardrobeSelectedDressing',JSON.stringify(selectedDressing));
+  renderSelectedLook(); selectSlot(activeSlot,false); toast(vibe+' vibe loaded');
+}
+function setScene(scene){
+  document.querySelector('.avatar-stage.cinematic')?.setAttribute('data-scene',scene);
+  localStorage.setItem('wardrobeScene',scene);
+}
+function initScene(){
+  const saved=localStorage.getItem('wardrobeScene'); const sel=document.getElementById('sceneSelect');
+  if(saved && sel){ sel.value=saved; setScene(saved); }
+}
+const originalInitDressing=initDressing;
+initDressing=async function(){ await originalInitDressing(); initScene(); };
+
 """
 
 
@@ -677,7 +752,8 @@ class WardrobeHandler(BaseHTTPRequestHandler):
                 self._send_json(rate_outfit(outfit_id, int(payload.get("rating", 0)), payload.get("reason"))); return
             if parsed.path == "/api/dressing/generate":
                 item_ids = [str(x) for x in (payload.get("item_ids") or [])]
-                self._send_json(_run_dress_generation(item_ids), status=201); return
+                scene = str(payload.get("scene") or "Neutral Studio")
+                self._send_json(_run_dress_generation(item_ids, scene), status=201); return
             self._send_json({"error": "not found"}, status=404)
         except Exception as e:  # small local tool; surface useful errors
             self._send_json({"error": str(e)}, status=400)
