@@ -67,18 +67,54 @@ def insert_item(con: sqlite3.Connection, item: dict) -> None:
     )
     con.commit()
 
+def _row_to_item(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["colors"] = json.loads(d.pop("colors_json"))
+    d["tags"] = json.loads(d.pop("tags_json"))
+    return d
+
+
 def list_items(con: sqlite3.Connection, category: str | None = None) -> list[dict]:
     if category:
         rows = con.execute("SELECT * FROM items WHERE category = ? ORDER BY created_at DESC", (category,)).fetchall()
     else:
         rows = con.execute("SELECT * FROM items ORDER BY created_at DESC").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["colors"] = json.loads(d.pop("colors_json"))
-        d["tags"] = json.loads(d.pop("tags_json"))
-        out.append(d)
-    return out
+    return [_row_to_item(r) for r in rows]
+
+
+def get_item(con: sqlite3.Connection, item_id: str) -> dict | None:
+    row = con.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+    return _row_to_item(row) if row else None
+
+
+def update_item_metadata(con: sqlite3.Connection, item_id: str, changes: dict) -> dict:
+    allowed = {"category", "subcategory", "colors", "tags", "notes"}
+    unknown = set(changes) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported item fields: {', '.join(sorted(unknown))}")
+    current = get_item(con, item_id)
+    if not current:
+        raise ValueError(f"No item found with id {item_id}")
+    next_item = {**current, **{k: v for k, v in changes.items() if v is not None}}
+    con.execute(
+        """
+        UPDATE items
+        SET category = ?, subcategory = ?, colors_json = ?, tags_json = ?, notes = ?
+        WHERE id = ?
+        """,
+        (
+            str(next_item.get("category") or "unknown").strip() or "unknown",
+            (str(next_item.get("subcategory")).strip() or None) if next_item.get("subcategory") is not None else None,
+            json.dumps([str(x).strip() for x in next_item.get("colors", []) if str(x).strip()]),
+            json.dumps([str(x).strip() for x in next_item.get("tags", []) if str(x).strip()]),
+            (str(next_item.get("notes")).strip() or None) if next_item.get("notes") is not None else None,
+            item_id,
+        ),
+    )
+    con.commit()
+    updated = get_item(con, item_id)
+    assert updated is not None
+    return updated
 
 
 def insert_outfit(con: sqlite3.Connection, outfit: dict) -> None:
