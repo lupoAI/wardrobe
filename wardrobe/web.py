@@ -384,15 +384,29 @@ async function openItem(id){
   const chips=(item.tags||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('');
   const colors=(item.colors||[]).map(t=>`<span class="swatch">${escapeHtml(t)}</span>`).join('');
   const detailImg=imageFor(item);
-  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
+  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div><div class="meta"><b>Remix</b><span><button type="button" class="primary ghost" onclick="remixItem('${escapeHtml(item.id)}')">Build outfit with this</button></span></div></div>`;
   detail.showModal();
 }
+
 async function loadSuggestions(){
   const params=new URLSearchParams({occasion:occasion.value,weather:weather.value,vibe:vibe.value,limit:'12'});
   const box=document.getElementById('suggestions'); box.innerHTML='<div class="empty">Scoring combinations…</div>';
   const outfits=await (await fetch('/api/outfits/suggest?'+params)).json();
   box.innerHTML=outfits.length?outfits.map(o=>renderOutfit(o,true)).join(''):'<div class="empty">No outfits found.</div>';
 }
+async function remixItem(id){
+  detail.close();
+  showTab('planner');
+  const box=document.getElementById('suggestions');
+  box.innerHTML='<div class="empty">Building outfits around this piece…</div>';
+  const params=new URLSearchParams({occasion:occasion.value,weather:weather.value,vibe:vibe.value,limit:'12',item_id:id});
+  const res=await fetch('/api/outfits/suggest?'+params);
+  const outfits=await res.json();
+  if(!res.ok){ box.innerHTML='<div class="empty">Could not remix this item: '+escapeHtml(outfits.error||'unknown error')+'</div>'; return; }
+  box.innerHTML=outfits.length?outfits.map(o=>renderOutfit(o,true)).join(''):'<div class="empty">No outfits found with that item.</div>';
+  box.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
 async function loadSavedOutfits(){
   const box=document.getElementById('savedOutfits'); box.innerHTML='<div class="empty">Loading saved looks…</div>';
   const outfits=await (await fetch('/api/outfits')).json();
@@ -575,6 +589,7 @@ class WardrobeHandler(BaseHTTPRequestHandler):
                 weather=(query.get("weather") or ["mild"])[0],
                 vibe=(query.get("vibe") or ["balanced"])[0],
                 limit=limit,
+                item_id=(query.get("item_id") or [None])[0],
             )
             self._send_json([_json_outfit(o) for o in outfits]); return
         if parsed.path == "/api/outfits":
