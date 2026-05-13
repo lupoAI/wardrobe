@@ -47,3 +47,21 @@ wardrobe similar --image /path/to/photo.jpg --limit 5
 ## Notes
 
 The first embedding implementation is offline and lightweight: color histograms plus texture features. It gives useful visual similarity immediately. Later we can swap in CLIP/OpenAI image embeddings while keeping the same catalog/database layout.
+
+## Travel capsule planner
+
+The web UI includes a **Travel** tab for building a compact capsule from the local catalog. Enter trip length, location, expected weather, style, and comma-separated constraints (for example `linen, black, sneakers`). The planner returns:
+
+- a deterministic packing list grouped from catalog items
+- weather/style-aware capsule counts for tops, bottoms, shoes, outerwear, and accessories
+- day-by-day outfit combinations using only the selected capsule pieces
+
+The same planner is available as JSON over GET or POST:
+
+```bash
+curl 'http://127.0.0.1:8765/api/travel/capsule?days=4&location=London&weather=rainy&style=minimal&constraints=black,sneakers'
+
+curl -X POST 'http://127.0.0.1:8765/api/travel/capsule' \
+  -H 'Content-Type: application/json' \
+  -d '{"days":4,"location":"London","weather":"rainy","style":"minimal","constraints":["black","sneakers"]}'
+```

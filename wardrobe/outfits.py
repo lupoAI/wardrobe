@@ -171,6 +171,170 @@ def suggest_outfits(occasion: str = "casual", weather: str = "mild", vibe: str =
     return scored[:limit]
 
 
+def _weather_from_context(weather: str = "mild", location: str = "") -> str:
+    requested = str(weather or "").strip().lower()
+    if requested in {"hot", "cold", "rainy", "mild"}:
+        return requested
+    text = f"{requested} {location}".lower()
+    if any(word in text for word in ["rain", "wet", "storm", "drizzle", "seattle", "london"]):
+        return "rainy"
+    if any(word in text for word in ["hot", "warm", "summer", "beach", "desert", "miami", "dubai", "la ", "los angeles"]):
+        return "hot"
+    if any(word in text for word in ["cold", "cool", "winter", "snow", "ski", "iceland", "oslo", "nyc winter"]):
+        return "cold"
+    return "mild"
+
+
+def _style_context(style: str = "balanced", constraints: list[str] | None = None) -> tuple[str, str, set[str]]:
+    text = " ".join([style or "", *(constraints or [])]).lower()
+    vibe = "minimal" if "minimal" in text or "neutral" in text else "statement" if "statement" in text or "bold" in text else "balanced"
+    occasion = "work" if any(w in text for w in ["work", "business", "office", "conference"]) else "dinner" if "dinner" in text else "travel"
+    ignored = {"minimal", "neutral", "statement", "bold", "balanced", "travel", "capsule", "outfit", "style", "work", "business", "office", "conference", "dinner"}
+    terms = {w.strip(" ,.;:/") for w in text.replace("-", " ").split() if len(w.strip(" ,.;:/")) >= 3 and w.strip(" ,.;:/") not in ignored}
+    return occasion, vibe, terms
+
+
+def _item_text(item: dict) -> str:
+    return " ".join([
+        item.get("id", ""), item.get("category", ""), item.get("subcategory", ""), item.get("notes", ""),
+        " ".join(item.get("tags") or []), " ".join(item.get("colors") or []),
+    ]).lower()
+
+
+def _travel_item_score(item: dict, weather: str, style_terms: set[str]) -> int:
+    profile = item_profile(item)
+    tags = profile["tags"]
+    text = _item_text(item)
+    score = 0
+    if profile["colors"] & NEUTRALS:
+        score += 4
+    if profile["pattern_strength"] == "solid":
+        score += 3
+    if weather == "hot" and profile["weight"] == "light":
+        score += 8
+    if weather == "hot" and profile["weight"] == "warm":
+        score -= 10
+    if weather == "cold" and profile["weight"] == "warm":
+        score += 8
+    if weather == "rainy" and any(w in text for w in ["rain", "waterproof", "coat", "jacket", "boots"]):
+        score += 7
+    if tags & {"linen", "lightweight", "sneakers", "chinos", "jeans", "shirt", "t-shirt", "tee"}:
+        score += 2
+    score += sum(5 for term in style_terms if term in text)
+    return score
+
+
+def _capsule_targets(days: int, weather: str, available: dict[str, list[dict]]) -> dict[str, int]:
+    targets = {
+        "tops": min(len(available.get("tops", [])), max(1, min(days, 5))),
+        "bottoms": min(len(available.get("bottoms", [])), max(1, min(3, (days + 1) // 2))),
+        "shoes": min(len(available.get("shoes", [])), 2 if days >= 4 else 1),
+        "outerwear": 0,
+        "accessories": min(len(available.get("accessories", [])), 2 if days >= 5 else 1),
+    }
+    if weather in {"cold", "rainy"}:
+        targets["outerwear"] = min(len(available.get("outerwear", [])), 2 if days >= 5 else 1)
+    elif weather == "mild":
+        targets["outerwear"] = min(len(available.get("outerwear", [])), 1)
+    return targets
+
+
+def _rank_items_for_capsule(rows: list[dict], weather: str, style_terms: set[str], top_outfits: list[dict]) -> dict[str, list[dict]]:
+    outfit_weight: dict[str, int] = {}
+    for rank, outfit in enumerate(top_outfits[:80]):
+        weight = max(1, 80 - rank) + int(outfit.get("score", 0))
+        for item in outfit.get("items", []):
+            outfit_weight[item["id"]] = outfit_weight.get(item["id"], 0) + weight
+    ranked: dict[str, list[dict]] = {}
+    for item in rows:
+        score = outfit_weight.get(item["id"], 0) + _travel_item_score(item, weather, style_terms)
+        ranked.setdefault(item["category"], []).append({**item, "capsule_score": score})
+    for cat in ranked:
+        ranked[cat].sort(key=lambda i: (-i["capsule_score"], i.get("category", ""), i.get("subcategory") or "", i["id"]))
+    return ranked
+
+
+def generate_capsule(
+    trip_duration: int | str = 3,
+    location: str = "",
+    weather: str = "mild",
+    style: str = "balanced",
+    constraints: list[str] | None = None,
+    limit: int | str | None = None,
+) -> dict:
+    """Build a deterministic travel capsule and day-by-day outfit plan from catalog data."""
+    days = max(1, min(30, int(trip_duration or 3)))
+    requested_days = max(1, min(days, int(limit or days)))
+    norm_weather = _weather_from_context(weather, location)
+    occasion, vibe, style_terms = _style_context(style, constraints)
+    rows = items()
+    available: dict[str, list[dict]] = {}
+    for row in rows:
+        available.setdefault(row["category"], []).append(row)
+
+    suggestions = suggest_outfits(occasion=occasion, weather=norm_weather, vibe=vibe, limit=240)
+    ranked = _rank_items_for_capsule(rows, norm_weather, style_terms, suggestions)
+    targets = _capsule_targets(days, norm_weather, available)
+    capsule_items: list[dict] = []
+    for category in ["tops", "bottoms", "shoes", "outerwear", "accessories"]:
+        capsule_items.extend(ranked.get(category, [])[:targets.get(category, 0)])
+    capsule_ids = {item["id"] for item in capsule_items}
+
+    day_candidates = [
+        outfit for outfit in suggestions
+        if outfit.get("items") and {item["id"] for item in outfit["items"]} <= capsule_ids
+        and any(item["category"] == "tops" for item in outfit["items"])
+        and any(item["category"] == "bottoms" for item in outfit["items"])
+    ]
+    if not day_candidates:
+        day_candidates = suggestions[:]
+
+    daily: list[dict] = []
+    used_keys: set[tuple[str, ...]] = set()
+    for day in range(1, requested_days + 1):
+        pool = [o for o in day_candidates if tuple(sorted(i["id"] for i in o["items"])) not in used_keys] or day_candidates or suggestions
+        chosen = pool[(day - 1) % len(pool)] if pool else None
+        if not chosen:
+            break
+        key = tuple(sorted(i["id"] for i in chosen["items"]))
+        used_keys.add(key)
+        daily.append({
+            **chosen,
+            "id": f"capsule_day_{day}",
+            "day": day,
+            "name": f"Day {day}: {_auto_name(chosen['items'])}",
+        })
+
+    notes = [
+        f"{len(capsule_items)} pieces for {days} day{'s' if days != 1 else ''}",
+        f"Weather profile: {norm_weather}",
+        f"Style profile: {style or 'balanced'}",
+    ]
+    if targets.get("outerwear"):
+        notes.append("Includes a layer for changing weather")
+    if days >= 4:
+        notes.append("Designed for rewearing tops/bottoms across multiple combinations")
+
+    return {
+        "trip": {
+            "duration_days": days,
+            "location": location,
+            "weather": norm_weather,
+            "requested_weather": weather,
+            "style": style,
+            "constraints": constraints or [],
+        },
+        "packing_notes": notes,
+        "capsule_items": capsule_items,
+        "daily_outfits": daily,
+        "counts": {
+            "pieces": len(capsule_items),
+            "daily_outfits": len(daily),
+            "categories": {cat: sum(1 for item in capsule_items if item["category"] == cat) for cat in sorted(targets)},
+        },
+    }
+
+
 def saved_outfits() -> list[dict]:
     rows = items()
     by_id = {row["id"]: row for row in rows}
