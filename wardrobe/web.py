@@ -15,6 +15,14 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .catalog import items
 from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
+from .db import (
+    connect as db_connect,
+    get_all_item_wear_stats,
+    get_all_outfit_wear_stats,
+    get_wear_stats,
+    log_wear as db_log_wear,
+    recent_wear as db_recent_wear,
+)
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
 
 
@@ -178,18 +186,27 @@ def _categories(rows: list[dict]) -> list[tuple[str, int]]:
     return sorted(counts.items(), key=lambda x: (-x[1], x[0]))
 
 
-def _json_item(row: dict) -> dict:
+def _json_item(row: dict, wear: dict | None = None) -> dict:
+    w = wear or {}
     return {
         **row,
         "image_url": _asset_path(row),
         "original_image_url": _asset_path(row),
         "thumbnail_url": _thumbnail_url(row),
         "has_thumbnail": _thumbnail_path(row).is_file(),
+        "wear_count": w.get("wear_count", 0),
+        "last_worn": w.get("last_worn"),
     }
 
 
-def _json_outfit(outfit: dict) -> dict:
-    return {**outfit, "items": [_json_item(item) for item in outfit.get("items", [])]}
+def _json_outfit(outfit: dict, wear: dict | None = None) -> dict:
+    w = wear or {}
+    return {
+        **outfit,
+        "items": [_json_item(item) for item in outfit.get("items", [])],
+        "wear_count": w.get("wear_count", 0),
+        "last_worn": w.get("last_worn"),
+    }
 
 
 def _render_page(query: dict[str, list[str]]) -> bytes:
@@ -354,6 +371,7 @@ dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20
 .wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.worn-note{margin:0 0 10px;font-size:12px;font-weight:800;color:var(--muted)}.actions .worn{background:rgba(198,122,69,.13);color:#7c4a1e}
 """
 
 
@@ -384,7 +402,7 @@ async function openItem(id){
   const chips=(item.tags||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('');
   const colors=(item.colors||[]).map(t=>`<span class="swatch">${escapeHtml(t)}</span>`).join('');
   const detailImg=imageFor(item);
-  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
+  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div><div class="meta"><b>Worn</b><span>${wornLabel(item.last_worn,item.wear_count)}</span></div><div style="padding:14px 0 4px"><button class="primary ghost" onclick="markWorn('item','${escapeHtml(item.id)}','${escapeHtml(item.notes||item.id)}')">Mark worn today</button></div></div>`;
   detail.showModal();
 }
 async function loadSuggestions(){
@@ -403,7 +421,9 @@ function renderOutfit(o,canSave){
   const cls=(o.items||[]).length===2?'two':(o.items||[]).length===3?'three':'';
   const reasons=(o.reasons||[]).map(r=>`<li>${escapeHtml(r)}</li>`).join('');
   const itemIds=JSON.stringify((o.items||[]).map(i=>i.id)).replaceAll('"','&quot;');
-  return `<article class="outfit"><div class="outfit-head"><div class="outfit-title"><h3>${escapeHtml(o.name||autoName(o))}</h3><p>${escapeHtml(o.occasion||'casual')} · ${escapeHtml(o.weather||'mild')} · ${escapeHtml(o.vibe||'balanced')}</p></div><div class="score">${o.score}</div></div><div class="strip ${cls}">${imgs}</div><div class="outfit-body"><ul class="reasons">${reasons}</ul><div class="actions">${canSave?`<button class="save" onclick="saveSuggestion(${itemIds})">Save outfit</button>`:''}<button class="yes" onclick="rate('${escapeHtml(o.id)}',1)">👍 Good</button><button class="no" onclick="rate('${escapeHtml(o.id)}',-1)">👎 No</button></div></div></article>`;
+  const wornNote=!canSave?`<p class="worn-note">${wornLabel(o.last_worn,o.wear_count)}</p>`:'';
+  const wornBtn=!canSave?`<button class="worn" onclick="markWorn('outfit','${escapeHtml(o.id)}','${escapeHtml(o.name||autoName(o))}')">Worn today</button>`:'';
+  return `<article class="outfit"><div class="outfit-head"><div class="outfit-title"><h3>${escapeHtml(o.name||autoName(o))}</h3><p>${escapeHtml(o.occasion||'casual')} · ${escapeHtml(o.weather||'mild')} · ${escapeHtml(o.vibe||'balanced')}</p></div><div class="score">${o.score}</div></div><div class="strip ${cls}">${imgs}</div><div class="outfit-body"><ul class="reasons">${reasons}</ul>${wornNote}<div class="actions">${canSave?`<button class="save" onclick="saveSuggestion(${itemIds})">Save outfit</button>`:''}<button class="yes" onclick="rate('${escapeHtml(o.id)}',1)">👍 Good</button><button class="no" onclick="rate('${escapeHtml(o.id)}',-1)">👎 No</button>${wornBtn}</div></div></article>`;
 }
 function autoName(o){return (o.items||[]).map(i=>[(i.colors||[])[0],i.subcategory||i.category].filter(Boolean).join(' ')).slice(0,3).join(' + ')}
 async function saveSuggestion(itemIds){
@@ -541,6 +561,23 @@ function renderDressedFallback(data){
 }
 
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+function wornLabel(lastWorn, count){
+  if(!lastWorn || !count) return 'Never worn';
+  const today=new Date().toISOString().slice(0,10);
+  const diff=Math.round((new Date(today)-new Date(lastWorn))/86400000);
+  const times=count>1?' (×'+count+')':'';
+  if(diff===0) return 'Worn today'+times;
+  if(diff===1) return 'Worn yesterday'+times;
+  if(diff<14) return 'Last worn '+diff+'d ago'+times;
+  if(diff<60) return 'Last worn '+Math.round(diff/7)+'w ago'+times;
+  return 'Last worn '+Math.round(diff/30)+'mo ago'+times;
+}
+async function markWorn(type, id, label){
+  const payload=type==='item'?{item_id:id}:{outfit_id:id};
+  const res=await fetch('/api/wear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(res.ok){ alert('Logged as worn today: '+label); }
+  else { const d=await res.json().catch(()=>{}); alert('Could not log wear: '+(d&&d.error||'unknown error')); }
+}
 """
 
 
@@ -563,11 +600,19 @@ class WardrobeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._send(200, _render_page(query), "text/html; charset=utf-8"); return
         if parsed.path == "/api/items":
-            self._send_json([_json_item(row) for row in _filtered_items(query)]); return
+            con = db_connect()
+            all_wear = get_all_item_wear_stats(con)
+            self._send_json([_json_item(row, all_wear.get(row["id"])) for row in _filtered_items(query)]); return
         if parsed.path.startswith("/api/items/"):
             item_id = unquote(parsed.path.removeprefix("/api/items/"))
             row = next((r for r in items() if r["id"] == item_id), None)
-            self._send_json(_json_item(row) if row else {"error": "not found"}, status=200 if row else 404); return
+            if row:
+                con = db_connect()
+                wear = get_wear_stats(con, item_id=item_id)
+                self._send_json(_json_item(row, wear))
+            else:
+                self._send_json({"error": "not found"}, status=404)
+            return
         if parsed.path == "/api/outfits/suggest":
             limit = int((query.get("limit") or ["12"])[0])
             outfits = suggest_outfits(
@@ -578,7 +623,15 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             )
             self._send_json([_json_outfit(o) for o in outfits]); return
         if parsed.path == "/api/outfits":
-            self._send_json([_json_outfit(o) for o in saved_outfits()]); return
+            con = db_connect()
+            all_wear = get_all_outfit_wear_stats(con)
+            self._send_json([_json_outfit(o, all_wear.get(o["id"])) for o in saved_outfits()]); return
+        if parsed.path == "/api/wear":
+            limit = int((query.get("limit") or ["20"])[0])
+            item_id_f = (query.get("item_id") or [None])[0]
+            outfit_id_f = (query.get("outfit_id") or [None])[0]
+            con = db_connect()
+            self._send_json(db_recent_wear(con, limit, item_id=item_id_f, outfit_id=outfit_id_f)); return
         if parsed.path.startswith("/user/"):
             self._send_user_asset(unquote(parsed.path.removeprefix("/user/"))); return
         if parsed.path.startswith("/images/"):
@@ -607,6 +660,14 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/dressing/generate":
                 item_ids = [str(x) for x in (payload.get("item_ids") or [])]
                 self._send_json(_run_dress_generation(item_ids), status=201); return
+            if parsed.path == "/api/wear":
+                item_id = payload.get("item_id") or None
+                outfit_id = payload.get("outfit_id") or None
+                if not item_id and not outfit_id:
+                    self._send_json({"error": "item_id or outfit_id required"}, status=400); return
+                con = db_connect()
+                result = db_log_wear(con, item_id=item_id, outfit_id=outfit_id, note=payload.get("note"), worn_date=payload.get("worn_date"))
+                self._send_json(result, status=201); return
             self._send_json({"error": "not found"}, status=404)
         except Exception as e:  # small local tool; surface useful errors
             self._send_json({"error": str(e)}, status=400)
