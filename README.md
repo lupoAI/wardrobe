@@ -44,6 +44,10 @@ wardrobe similar --id item_abc123 --limit 5
 wardrobe similar --image /path/to/photo.jpg --limit 5
 ```
 
+## Native iOS prototype
+
+A first SwiftUI migration slice lives in [`ios/WardrobeApp`](ios/WardrobeApp). It connects to the local `wardrobe-web` server using the JSON APIs, displays the item grid/detail views, and can upload photos via `POST /api/items`.
+
 ## Notes
 
 The first embedding implementation is offline and lightweight: color histograms plus texture features. It gives useful visual similarity immediately. Later we can swap in CLIP/OpenAI image embeddings while keeping the same catalog/database layout.
