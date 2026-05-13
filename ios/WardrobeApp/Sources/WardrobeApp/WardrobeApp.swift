@@ -121,6 +121,10 @@ struct ItemCard: View {
             .frame(maxWidth: .infinity)
             .background(.thinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 22))
+            .overlay(alignment: .topTrailing) {
+                ThumbnailBadge(state: item.thumbnailState)
+                    .padding(8)
+            }
 
             Text(item.displayTitle)
                 .font(.headline)
@@ -157,6 +161,16 @@ struct ItemDetailView: View {
                 LabeledContent("Category", value: item.subtitle)
                 if let original = item.originalFilename { LabeledContent("Original", value: original) }
                 if let created = item.createdAt { LabeledContent("Created", value: created) }
+                LabeledContent("Thumbnail") {
+                    Label(item.thumbnailBadgeLabel, systemImage: item.thumbnailBadgeSystemImage)
+                        .font(.subheadline)
+                        .foregroundStyle(item.thumbnailState == .cleanWithoutBG ? .green : .secondary)
+                }
+                Text(item.thumbnailStatusDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let generated = item.thumbnailGeneratedAt { LabeledContent("Generated", value: generated) }
+                if let cleaned = item.thumbnailCleanedAt { LabeledContent("Cleaned", value: cleaned) }
             }
 
             if !item.colors.isEmpty {
@@ -188,6 +202,55 @@ struct TagRow: View {
     }
 }
 
+struct ThumbnailBadge: View {
+    let state: WardrobeItem.ThumbnailState
+
+    var body: some View {
+        Label(label, systemImage: systemImage)
+            .font(.caption2.weight(.bold))
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .foregroundStyle(foregroundStyle)
+            .background(backgroundStyle, in: Capsule())
+            .accessibilityLabel(label)
+    }
+
+    private var label: String {
+        switch state {
+        case .cleanWithoutBG: return "withoutBG"
+        case .legacyThumbnail: return "Legacy"
+        case .needsThumbnail: return "Pending"
+        case .originalFallback: return "Original"
+        }
+    }
+
+    private var systemImage: String {
+        switch state {
+        case .cleanWithoutBG: return "sparkles"
+        case .legacyThumbnail: return "photo.badge.checkmark"
+        case .needsThumbnail: return "clock"
+        case .originalFallback: return "photo"
+        }
+    }
+
+    private var foregroundStyle: Color {
+        switch state {
+        case .cleanWithoutBG: return .green
+        case .legacyThumbnail: return .orange
+        case .needsThumbnail, .originalFallback: return .secondary
+        }
+    }
+
+    private var backgroundStyle: Color {
+        switch state {
+        case .cleanWithoutBG: return .green.opacity(0.16)
+        case .legacyThumbnail: return .orange.opacity(0.16)
+        case .needsThumbnail, .originalFallback: return .secondary.opacity(0.14)
+        }
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
@@ -198,6 +261,11 @@ struct SettingsView: View {
                 Section("Backend") {
                     TextField("http://127.0.0.1:8765", text: $settings.baseURLString)
                     Text("Use 127.0.0.1 for the simulator. Use your Mac's LAN IP for a physical iPhone.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Thumbnail workflow") {
+                    Text("The backend generates transparent withoutBG-clean thumbnails for uploaded and imported items. New items may show the original photo first; refresh after the thumbnail job has run.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -244,6 +312,11 @@ struct UploadView: View {
                         }
                     }
                     TextField("Notes", text: $notes, axis: .vertical)
+                }
+                Section("After upload") {
+                    Text("The backend stores the original photo immediately, then its thumbnail workflow creates a transparent withoutBG-clean catalog icon. If this item appears as an original fallback, refresh the grid after processing finishes.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
             }

@@ -5,8 +5,8 @@ This is the first native SwiftUI migration slice for the local Wardrobe catalog.
 ## What it includes
 
 - SwiftUI item grid with category/search filters.
-- Item detail screen using the existing image and thumbnail URLs.
-- Upload/import screen that sends a selected photo to the Python backend.
+- Item detail screen using the existing image and thumbnail URLs, including thumbnail/background-removal status when exposed by the backend.
+- Upload/import screen that sends a selected photo to the Python backend and explains the withoutBG-clean thumbnail workflow.
 - `WardrobeAPI` client and Codable models matching the JSON endpoints in `wardrobe.web`.
 - Backend base URL setting persisted in `UserDefaults`.
 
@@ -51,6 +51,20 @@ The app uses these endpoints from `wardrobe.web`:
 ```
 
 The upload endpoint returns the created `WardrobeItem` with `image_url`, `thumbnail_url`, and `original_image_url` resolved for the local server.
+
+Backends with the current clean-thumbnail workflow may also include these optional fields:
+
+```json
+{
+  "thumbnail_status": "clean",
+  "has_clean_thumbnail": true,
+  "background_removed": true,
+  "thumbnail_generated_at": "2026-05-13T20:42:00Z",
+  "thumbnail_cleaned_at": "2026-05-13T20:42:03Z"
+}
+```
+
+`thumbnail_status` is expected to be `clean`, `legacy-jpg`, or `missing`. The iOS app treats `clean` / `has_clean_thumbnail` / `background_removed` as the preferred ready state: a transparent withoutBG-clean catalog thumbnail. Newly uploaded or imported items can appear as an original-photo fallback until the backend thumbnail job processes them; pull to refresh after processing.
 
 ## Next migration steps
 
