@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from .catalog import items
 from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
+from .thumbnails import thumbnail_status
 
 
 USER_DIR = PROJECT_ROOT / "data" / "user" / "salo"
@@ -179,12 +180,18 @@ def _categories(rows: list[dict]) -> list[tuple[str, int]]:
 
 
 def _json_item(row: dict) -> dict:
+    status = thumbnail_status(row)
     return {
         **row,
         "image_url": _asset_path(row),
         "original_image_url": _asset_path(row),
         "thumbnail_url": _thumbnail_url(row),
         "has_thumbnail": _thumbnail_path(row).is_file(),
+        "thumbnail_status": status["state"],
+        "has_clean_thumbnail": status["has_clean_thumbnail"],
+        "background_removed": status["background_removed"],
+        "thumbnail_generated_at": status.get("generated_at"),
+        "thumbnail_cleaned_at": status.get("cleaned_at"),
     }
 
 
@@ -327,11 +334,15 @@ def _render_card(row: dict) -> str:
     item_id = html.escape(row["id"])
     img = html.escape(_asset_path(row))
     thumb = html.escape(_thumbnail_url(row))
+    status = thumbnail_status(row)
+    badge = "Clean icon" if status["has_clean_thumbnail"] else ("Legacy icon" if status["has_legacy_thumbnail"] else "Needs icon")
+    badge_class = "ready" if status["has_clean_thumbnail"] else "missing"
     return f"""
       <article class="card" onclick="openItem('{item_id}')" tabindex="0" onkeydown="if(event.key==='Enter') openItem('{item_id}')">
         <div class="photo"><img class="wardrobe-img" loading="lazy" src="{img}" data-original="{img}" data-thumbnail="{thumb}" alt="{notes}" /></div>
         <div class="card-copy">
           <div class="row"><span class="type">{sub}</span><code>{item_id.replace('item_', '')}</code></div>
+          <span class="thumb-badge {badge_class}">{badge}</span>
           <h2>{notes}</h2>
           <div class="pills">{colors}</div>
           <div class="pills muted">{tags}</div>
@@ -347,7 +358,7 @@ CSS = r"""
 .search{display:flex;gap:8px;padding:8px;background:rgba(255,255,255,.45);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.search input{min-width:0;flex:1;border:0;outline:0;border-radius:16px;padding:15px 14px;background:rgba(255,255,255,.78);color:var(--ink);font:inherit;font-weight:650}.search button,.primary{border:0;border-radius:16px;padding:0 18px;background:var(--accent);color:white;font-weight:900;min-height:48px}.primary.ghost{background:rgba(23,22,19,.08);color:var(--ink)}
 .view-toggle{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;margin:12px 2px 0;padding:7px;border:1px solid var(--line);background:rgba(255,255,255,.52);border-radius:18px;box-shadow:0 8px 24px rgba(33,28,20,.08);overflow-x:auto}.view-toggle.compact{margin:0;box-shadow:none;background:rgba(255,255,255,.66)}.view-toggle span{padding:0 7px;color:var(--muted);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.mode{white-space:nowrap;border:0;border-radius:13px;padding:10px 12px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:900}.mode.active{background:var(--ink);color:white}.photo img.thumbnail-mode,.strip img.thumbnail-mode{object-fit:contain;background:transparent;padding:7%}
 .chips{display:flex;gap:9px;overflow-x:auto;padding:16px 2px 14px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}.chip{white-space:nowrap;text-decoration:none;color:var(--ink);border:1px solid var(--line);background:rgba(255,255,255,.55);padding:10px 13px;border-radius:999px;font-weight:800;text-transform:capitalize}.chip span{color:var(--muted);margin-left:5px}.chip.active{background:var(--ink);color:white;border-color:var(--ink)}.chip.active span{color:rgba(255,255,255,.65)}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:26px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10);cursor:pointer;transition:transform .18s ease}.card:active{transform:scale(.985)}.photo{aspect-ratio:4/5;background:#e8dfd2;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}.card-copy{padding:12px}.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.type{color:var(--accent2);text-transform:capitalize;font-size:12px;font-weight:900}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted)}h2{margin:7px 0 10px;font-size:14px;line-height:1.18;letter-spacing:-.02em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.pills{display:flex;flex-wrap:wrap;gap:5px}.pills.muted{margin-top:7px;opacity:.72}.pill,.swatch{display:inline-flex;align-items:center;min-height:24px;padding:5px 8px;border-radius:999px;background:rgba(23,22,19,.07);font-size:11px;font-weight:800;color:#3a352e}.swatch{background:rgba(198,122,69,.13)}.empty{padding:42px 16px;border:1px dashed var(--line);border-radius:24px;text-align:center;color:var(--muted);font-weight:800;grid-column:1/-1}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:26px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10);cursor:pointer;transition:transform .18s ease}.card:active{transform:scale(.985)}.photo{aspect-ratio:4/5;background:#e8dfd2;overflow:hidden}.photo img{width:100%;height:100%;object-fit:cover;display:block}.card-copy{padding:12px}.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.type{color:var(--accent2);text-transform:capitalize;font-size:12px;font-weight:900}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted)}h2{margin:7px 0 10px;font-size:14px;line-height:1.18;letter-spacing:-.02em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.thumb-badge{display:inline-flex;margin:7px 0 0;padding:4px 7px;border-radius:999px;background:rgba(153,27,27,.10);color:#991b1b;font-size:10px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.thumb-badge.ready{background:rgba(22,101,52,.12);color:var(--good)}.pills{display:flex;flex-wrap:wrap;gap:5px}.pills.muted{margin-top:7px;opacity:.72}.pill,.swatch{display:inline-flex;align-items:center;min-height:24px;padding:5px 8px;border-radius:999px;background:rgba(23,22,19,.07);font-size:11px;font-weight:800;color:#3a352e}.swatch{background:rgba(198,122,69,.13)}.empty{padding:42px 16px;border:1px dashed var(--line);border-radius:24px;text-align:center;color:var(--muted);font-weight:800;grid-column:1/-1}
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
@@ -384,7 +395,7 @@ async function openItem(id){
   const chips=(item.tags||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('');
   const colors=(item.colors||[]).map(t=>`<span class="swatch">${escapeHtml(t)}</span>`).join('');
   const detailImg=imageFor(item);
-  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_thumbnail?'Generated thumbnail':'Original fallback'):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
+  document.getElementById('detailBody').innerHTML=`<img class="detail-img ${imageMode==='thumbnail'?'thumbnail-mode':''}" src="${detailImg}" alt="${escapeHtml(item.notes||item.id)}"><div class="detail-copy"><p class="eyebrow">${escapeHtml(item.category)} / ${escapeHtml(item.subcategory||'—')}</p><h2>${escapeHtml(item.notes||item.id)}</h2><div class="meta"><b>ID</b><code>${escapeHtml(item.id)}</code></div><div class="meta"><b>View</b><span>${imageMode==='thumbnail'?(item.has_clean_thumbnail?'Clean transparent thumbnail':(item.has_thumbnail?'Legacy thumbnail':'Original photo (no thumbnail)')):'Original photo'}</span></div><div class="meta"><b>Created</b><span>${escapeHtml(item.created_at||'')}</span></div><div class="meta"><b>Colors</b><div class="pills">${colors}</div></div><div class="meta"><b>Tags</b><div class="pills">${chips}</div></div><div class="meta"><b>Original</b><span>${escapeHtml(item.original_filename||'')}</span></div></div>`;
   detail.showModal();
 }
 async function loadSuggestions(){
