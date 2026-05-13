@@ -9,6 +9,7 @@ It currently:
 - extracts rough dominant colors and pattern tags
 - creates a deterministic local image embedding saved as `.npy`
 - supports similarity search by image or existing item id
+- includes a local web dressing room for replacing the base avatar, generating dressed avatar looks, saving them into a lookbook, regenerating bad outputs, and exporting share cards
 
 ## Setup
 
@@ -43,6 +44,24 @@ wardrobe list --category shoes
 wardrobe similar --id item_abc123 --limit 5
 wardrobe similar --image /path/to/photo.jpg --limit 5
 ```
+
+## Avatar dressing room
+
+Run the local web app:
+
+```bash
+wardrobe-web --port 8765
+```
+
+Open the **Dress** tab to:
+
+- replace the base avatar from the app, or via `POST /api/avatar` with `multipart/form-data` field `avatar` or JSON `{ "image_path": "/path/to/avatar.png" }`
+- generate a dressed avatar from selected wardrobe pieces with `POST /api/dressing/generate`
+- force a fresh try if the output is bad with `POST /api/dressing/generate` and `{ "force": true, "item_ids": [...] }`
+- browse saved generated looks at `GET /api/dressing/lookbook`
+- export a shareable outfit card with `POST /api/dressing/lookbook/<look_id>/card`
+
+Generated images, metadata, lookbook JSON, and exported cards stay local under `data/user/salo/dressed/`.
 
 ## Notes
 
