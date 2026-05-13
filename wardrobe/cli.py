@@ -4,7 +4,7 @@ import argparse
 import json
 from .catalog import add_item, items, similar
 from .db import connect
-from .thumbnails import generate_all_thumbnails, generate_thumbnail
+from .thumbnails import clean_all_thumbnails, clean_thumbnail, generate_all_thumbnails, generate_thumbnail, thumbnail_status, thumbnail_statuses
 
 def emit(obj):
     print(json.dumps(obj, indent=2, ensure_ascii=False))
@@ -34,6 +34,9 @@ def main(argv=None):
     thumbs.add_argument("--category", "-c", help="Generate thumbnails for one category")
     thumbs.add_argument("--limit", type=int, help="Limit the number of items processed")
     thumbs.add_argument("--force", action="store_true", help="Regenerate existing thumbnails")
+    thumbs.add_argument("--clean-only", action="store_true", help="Refresh transparent PNG cutouts from existing raw/legacy/original images without model calls")
+    thumbs.add_argument("--status", action="store_true", help="Report thumbnail/cutout status without generating anything")
+    thumbs.add_argument("--size", type=int, default=1024, help="Output cutout size for --clean-only (default: 1024)")
 
     args = p.parse_args(argv)
     if args.cmd == "init":
@@ -51,7 +54,16 @@ def main(argv=None):
             row = next((r for r in items() if r["id"] == args.id), None)
             if not row:
                 raise SystemExit(f"No item found with id {args.id}")
-            emit(generate_thumbnail(row, force=args.force))
+            if args.status:
+                emit(thumbnail_status(row))
+            elif args.clean_only:
+                emit(clean_thumbnail(row, force=args.force, size=args.size))
+            else:
+                emit(generate_thumbnail(row, force=args.force))
+        elif args.status:
+            emit(thumbnail_statuses(category=args.category, limit=args.limit))
+        elif args.clean_only:
+            emit(clean_all_thumbnails(category=args.category, limit=args.limit, force=args.force, size=args.size))
         else:
             emit(generate_all_thumbnails(category=args.category, limit=args.limit, force=args.force))
 

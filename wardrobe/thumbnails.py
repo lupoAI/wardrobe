@@ -102,7 +102,7 @@ def metadata_path_for(item_id: str) -> Path:
 
 
 
-def remove_plain_background(src: str | Path, dest: str | Path) -> None:
+def remove_plain_background(src: str | Path, dest: str | Path, *, size: int = 1024) -> dict:
     """Remove a mostly plain generated thumbnail background and save RGBA PNG.
 
     The Gemini image model currently ignores transparent-background hints for this
@@ -110,6 +110,7 @@ def remove_plain_background(src: str | Path, dest: str | Path) -> None:
     conservative edge-connected background mask so similarly colored details inside
     the garment are not removed unless connected to the image edge.
     """
+    target_size = size
     img = Image.open(src).convert("RGB")
     w, h = img.size
     px = img.load()
@@ -170,13 +171,117 @@ def remove_plain_background(src: str | Path, dest: str | Path) -> None:
         left = max(0, bbox[0] - pad); top = max(0, bbox[1] - pad)
         right = min(w, bbox[2] + pad); bottom = min(h, bbox[3] + pad)
         rgba = rgba.crop((left, top, right, bottom))
-        size = max(rgba.size)
-        canvas = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-        canvas.alpha_composite(rgba, ((size - rgba.width) // 2, (size - rgba.height) // 2))
-        rgba = canvas.resize((1024, 1024), Image.Resampling.LANCZOS)
+    canvas_size = max(rgba.size)
+    canvas = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
+    canvas.alpha_composite(rgba, ((canvas_size - rgba.width) // 2, (canvas_size - rgba.height) // 2))
+    rgba = canvas.resize((target_size, target_size), Image.Resampling.LANCZOS)
 
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
     rgba.save(dest, "PNG")
+    alpha_stat = ImageStat.Stat(rgba.getchannel("A"))
+    transparent_ratio = 1.0 - (alpha_stat.mean[0] / 255.0)
+    return {
+        "source_path": str(src),
+        "output_path": str(dest),
+        "source_size": [w, h],
+        "output_size": list(rgba.size),
+        "background_color": list(bg),
+        "threshold": round(float(threshold), 2),
+        "transparent_ratio": round(float(transparent_ratio), 4),
+        "bbox": list(bbox) if bbox else None,
+    }
+
+
+def _read_metadata(item_id: str) -> dict:
+    path = metadata_path_for(item_id)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def thumbnail_status(item: dict) -> dict:
+    """Return thumbnail/cutout availability without making model calls."""
+    item_id = item["id"]
+    png = thumbnail_path_for(item_id)
+    legacy = legacy_thumbnail_path_for(item_id)
+    raw = THUMBNAIL_META_DIR / f"{item_id}.raw.jpg"
+    meta = _read_metadata(item_id)
+    if png.is_file():
+        state = "clean"
+        thumbnail_path = str(png)
+    elif legacy.is_file():
+        state = "legacy-jpg"
+        thumbnail_path = str(legacy)
+    else:
+        state = "missing"
+        thumbnail_path = None
+    return {
+        "id": item_id,
+        "state": state,
+        "has_clean_thumbnail": png.is_file(),
+        "has_legacy_thumbnail": legacy.is_file(),
+        "has_raw_thumbnail": raw.is_file(),
+        "thumbnail_path": thumbnail_path,
+        "metadata_path": str(metadata_path_for(item_id)) if metadata_path_for(item_id).is_file() else None,
+        "background_removed": bool(meta.get("background_removed")) if meta else png.is_file(),
+        "format": meta.get("format") or ("png" if png.is_file() else "jpg" if legacy.is_file() else None),
+        "generated_at": meta.get("generated_at"),
+        "cleaned_at": meta.get("cleaned_at"),
+        "source_path": meta.get("source_path") or meta.get("raw_thumbnail_path") or meta.get("legacy_thumbnail_path"),
+    }
+
+
+def _best_clean_source(item: dict) -> Path:
+    item_id = item["id"]
+    candidates = [
+        THUMBNAIL_META_DIR / f"{item_id}.raw.jpg",
+        legacy_thumbnail_path_for(item_id),
+        Path(item["image_path"]),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"No source image found for {item_id}")
+
+
+def clean_thumbnail(item: dict, *, source: str | Path | None = None, force: bool = False, size: int = 1024) -> dict:
+    """Create/refresh a transparent PNG cutout from an existing image source.
+
+    This is intentionally model-free: it reuses the generated raw thumbnail when
+    available, falls back to legacy JPG thumbnails, and finally tries the original
+    catalog photo. It is useful for repairing old assets or building clean
+    thumbnails in environments where image generation is unavailable.
+    """
+    THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+    THUMBNAIL_META_DIR.mkdir(parents=True, exist_ok=True)
+    item_id = item["id"]
+    out = thumbnail_path_for(item_id)
+    meta_out = metadata_path_for(item_id)
+    if out.exists() and not force:
+        return {**thumbnail_status(item), "skipped": True, "reason": "clean_thumbnail_exists"}
+
+    src = Path(source) if source is not None else _best_clean_source(item)
+    cleanup = remove_plain_background(src, out, size=size)
+    meta = _read_metadata(item_id)
+    meta.update(
+        {
+            "id": item_id,
+            "category": item.get("category"),
+            "subcategory": item.get("subcategory"),
+            "image_path": str(item.get("image_path")),
+            "thumbnail_path": str(out),
+            "source_path": str(src),
+            "background_removed": True,
+            "format": "png",
+            "cleaned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "cleanup": cleanup,
+        }
+    )
+    meta_out.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    return {**meta, "skipped": False}
 
 
 def generate_thumbnail(item: dict, *, force: bool = False, timeout: int = 180) -> dict:
@@ -261,7 +366,37 @@ def generate_thumbnail(item: dict, *, force: bool = False, timeout: int = 180) -
     return meta
 
 
+def thumbnail_statuses(*, category: str | None = None, limit: int | None = None) -> list[dict]:
+    rows = items(category)
+    if limit is not None:
+        rows = rows[:limit]
+    return [thumbnail_status(item) for item in rows]
+
+
+def clean_all_thumbnails(*, category: str | None = None, limit: int | None = None, force: bool = False, size: int = 1024) -> list[dict]:
+    THUMBNAIL_META_DIR.mkdir(parents=True, exist_ok=True)
+    rows = items(category)
+    if limit is not None:
+        rows = rows[:limit]
+    results = []
+    for idx, item in enumerate(rows, start=1):
+        try:
+            result = clean_thumbnail(item, force=force, size=size)
+            status = "skipped" if result.get("skipped") else "cleaned"
+            print(json.dumps({"index": idx, "total": len(rows), "id": item["id"], "status": status, "thumbnail_path": result.get("thumbnail_path")}), flush=True)
+            results.append(result)
+        except Exception as e:
+            err = {"id": item.get("id"), "error": str(e), "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            print(json.dumps({"index": idx, "total": len(rows), "id": item.get("id"), "status": "error", "error": str(e)}), flush=True)
+            (THUMBNAIL_META_DIR / f"{item.get('id', 'unknown')}.error.json").write_text(json.dumps(err, indent=2))
+            results.append(err)
+    manifest = THUMBNAIL_META_DIR / "clean-manifest.json"
+    manifest.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    return results
+
+
 def generate_all_thumbnails(*, category: str | None = None, limit: int | None = None, force: bool = False) -> list[dict]:
+    THUMBNAIL_META_DIR.mkdir(parents=True, exist_ok=True)
     rows = items(category)
     if limit is not None:
         rows = rows[:limit]
