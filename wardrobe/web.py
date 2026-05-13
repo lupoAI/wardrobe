@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -23,7 +24,11 @@ AVATAR_DIR = USER_DIR / "avatar"
 DRESSED_DIR = USER_DIR / "dressed"
 BASE_AVATAR_PATH = AVATAR_DIR / "neutral_avatar.jpg"
 BASE_AVATAR_TRANSPARENT_PATH = AVATAR_DIR / "neutral_avatar_transparent.png"
+AVATAR_META_PATH = AVATAR_DIR / "avatar.json"
+LOOKBOOK_PATH = DRESSED_DIR / "lookbook.json"
+LOOK_CARD_DIR = DRESSED_DIR / "cards"
 DRESS_MODEL = "google/gemini-3.1-flash-image-preview"
+ALLOWED_AVATAR_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def _asset_path(item: dict) -> str:
@@ -54,10 +59,63 @@ def _user_asset_url(path: Path) -> str:
     return "/user/" + quote(str(rel).replace(os.sep, "/"))
 
 
+def _current_avatar_path() -> Path:
+    candidates = [
+        BASE_AVATAR_TRANSPARENT_PATH,
+        BASE_AVATAR_PATH,
+        AVATAR_DIR / "neutral_avatar.jpeg",
+        AVATAR_DIR / "neutral_avatar.png",
+        AVATAR_DIR / "neutral_avatar.webp",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return BASE_AVATAR_PATH
+
+
 def _avatar_url() -> str:
-    if BASE_AVATAR_TRANSPARENT_PATH.is_file():
-        return _user_asset_url(BASE_AVATAR_TRANSPARENT_PATH)
-    return _user_asset_url(BASE_AVATAR_PATH)
+    return _user_asset_url(_current_avatar_path())
+
+
+def _avatar_status() -> dict:
+    path = _current_avatar_path()
+    meta = {}
+    if AVATAR_META_PATH.is_file():
+        try:
+            meta = json.loads(AVATAR_META_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    return {
+        "exists": path.is_file(),
+        "image_path": str(path) if path.is_file() else None,
+        "image_url": _user_asset_url(path) if path.is_file() else None,
+        "updated_at": meta.get("updated_at"),
+        "original_filename": meta.get("original_filename"),
+    }
+
+
+def _replace_base_avatar(src: str | Path, original_filename: str | None = None) -> dict:
+    source = Path(src).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Avatar image not found: {source}")
+    ext = source.suffix.lower() or ".jpg"
+    if ext not in ALLOWED_AVATAR_EXTENSIONS:
+        raise ValueError("Avatar must be a jpg, png, or webp image")
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    for old in AVATAR_DIR.glob("neutral_avatar*"):
+        if old.is_file() and old.resolve() != source:
+            old.unlink()
+    dest = AVATAR_DIR / f"neutral_avatar{ext}"
+    if source != dest.resolve():
+        shutil.copy2(source, dest)
+    meta = {
+        "image_path": str(dest),
+        "image_url": _user_asset_url(dest),
+        "original_filename": original_filename or source.name,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    AVATAR_META_PATH.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    return {"ok": True, **_avatar_status()}
 
 
 def _dress_prompt(selected: list[dict]) -> str:
@@ -81,31 +139,36 @@ Requirements:
 - Non-sexualized, realistic anatomy, no pose change beyond tiny natural clothing fit adjustments."""
 
 
-def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
+def _run_dress_generation(item_ids: list[str], timeout: int = 240, force: bool = False) -> dict:
     DRESSED_DIR.mkdir(parents=True, exist_ok=True)
     all_items = {row["id"]: row for row in items()}
     selected = [all_items[item_id] for item_id in item_ids if item_id in all_items]
     if not selected:
         raise ValueError("Choose at least one wardrobe item")
-    if not BASE_AVATAR_PATH.is_file():
-        raise FileNotFoundError(f"Missing avatar: {BASE_AVATAR_PATH}")
+    avatar_path = _current_avatar_path()
+    if not avatar_path.is_file():
+        raise FileNotFoundError(f"Missing avatar: {avatar_path}")
 
     canonical_item_ids = sorted(row["id"] for row in selected)
     combo_hash = hashlib.sha256("|".join(canonical_item_ids).encode("utf-8")).hexdigest()[:16]
-    out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.jpg"
-    meta_out = DRESSED_DIR / f"dressed_avatar_{combo_hash}.json"
-    if out.is_file() and meta_out.is_file():
+    variant = time.strftime("%Y%m%d%H%M%S", time.gmtime()) if force else ""
+    name = f"dressed_avatar_{combo_hash}_{variant}" if variant else f"dressed_avatar_{combo_hash}"
+    out = DRESSED_DIR / f"{name}.jpg"
+    meta_out = DRESSED_DIR / f"{name}.json"
+    if not force and out.is_file() and meta_out.is_file():
         try:
             meta = json.loads(meta_out.read_text())
+            meta.setdefault("look_id", name)
             meta["image_url"] = _user_asset_url(out)
             meta["cached"] = True
+            _save_lookbook_entry(meta)
             return meta
         except (OSError, json.JSONDecodeError):
             pass
     prompt = _dress_prompt(selected)
     cmd = [
         "openclaw", "infer", "image", "edit",
-        "--file", str(BASE_AVATAR_PATH),
+        "--file", str(avatar_path),
     ]
     for row in selected:
         cmd.extend(["--file", str(Path(row["image_path"]))])
@@ -131,6 +194,9 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
         "image_path": str(generated_path),
         "image_url": _user_asset_url(generated_path),
         "combo_hash": combo_hash,
+        "look_id": name,
+        "regenerated": force,
+        "avatar": _avatar_status(),
         "item_ids": canonical_item_ids,
         "selected_order": [row["id"] for row in selected],
         "items": [_json_item(row) for row in selected],
@@ -141,8 +207,112 @@ def _run_dress_generation(item_ids: list[str], timeout: int = 240) -> dict:
         "provider_output": outputs[0] if outputs else data,
     }
     meta_out.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    _save_lookbook_entry(meta)
     return meta
 
+
+
+def _load_lookbook() -> list[dict]:
+    if not LOOKBOOK_PATH.is_file():
+        return []
+    try:
+        data = json.loads(LOOKBOOK_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_lookbook(entries: list[dict]) -> None:
+    DRESSED_DIR.mkdir(parents=True, exist_ok=True)
+    LOOKBOOK_PATH.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+
+
+def _lookbook_entry(meta: dict) -> dict:
+    return {
+        "look_id": meta.get("look_id") or f"dressed_avatar_{meta.get('combo_hash', '')}",
+        "combo_hash": meta.get("combo_hash"),
+        "image_path": meta.get("image_path"),
+        "image_url": meta.get("image_url"),
+        "item_ids": meta.get("item_ids") or [],
+        "items": meta.get("items") or [],
+        "model": meta.get("model"),
+        "generated_at": meta.get("generated_at"),
+        "regenerated": bool(meta.get("regenerated")),
+        "card_url": meta.get("card_url"),
+    }
+
+
+def _save_lookbook_entry(meta: dict) -> dict:
+    entry = _lookbook_entry(meta)
+    entries = [e for e in _load_lookbook() if e.get("look_id") != entry.get("look_id")]
+    entries.insert(0, entry)
+    _save_lookbook(entries[:100])
+    return entry
+
+
+def _lookbook() -> list[dict]:
+    entries = _load_lookbook()
+    changed = False
+    for entry in entries:
+        path = Path(entry.get("image_path") or "")
+        if path.is_file():
+            entry["image_url"] = _user_asset_url(path)
+        card_path = LOOK_CARD_DIR / f"{entry.get('look_id')}.jpg"
+        if card_path.is_file():
+            entry["card_url"] = _user_asset_url(card_path)
+            changed = True
+    if changed:
+        _save_lookbook(entries)
+    return entries
+
+
+def _export_look_card(look_id: str) -> dict:
+    from PIL import Image, ImageDraw, ImageFont
+
+    entry = next((e for e in _lookbook() if e.get("look_id") == look_id), None)
+    if not entry:
+        raise ValueError("Look not found")
+    image_path = Path(entry.get("image_path") or "")
+    if not image_path.is_file():
+        raise FileNotFoundError("Generated look image is missing")
+    LOOK_CARD_DIR.mkdir(parents=True, exist_ok=True)
+    out = LOOK_CARD_DIR / f"{look_id}.jpg"
+
+    canvas_w, canvas_h = 1400, 1800
+    bg = Image.new("RGB", (canvas_w, canvas_h), "#f6f2ea")
+    draw = ImageDraw.Draw(bg)
+    try:
+        title_font = ImageFont.load_default(size=54)
+        body_font = ImageFont.load_default(size=28)
+    except TypeError:  # older Pillow fallback
+        title_font = ImageFont.load_default()
+        body_font = ImageFont.load_default()
+    draw.text((70, 60), "Wardrobe look", fill="#171613", font=title_font)
+    draw.text((70, 122), look_id, fill="#736b60", font=body_font)
+
+    look = Image.open(image_path).convert("RGB")
+    look.thumbnail((760, 1320), Image.Resampling.LANCZOS)
+    bg.paste(look, (70 + (760 - look.width)//2, 220), None)
+
+    x, y = 900, 240
+    draw.text((x, 180), "Pieces", fill="#171613", font=title_font)
+    for item in (entry.get("items") or [])[:5]:
+        thumb_path = _thumbnail_path(item)
+        if not thumb_path.is_file():
+            thumb_path = Path(item.get("image_path") or "")
+        if thumb_path.is_file():
+            thumb = Image.open(thumb_path).convert("RGB")
+            thumb.thumbnail((160, 200), Image.Resampling.LANCZOS)
+            bg.paste(thumb, (x, y))
+        label = item.get("notes") or item.get("subcategory") or item.get("category") or item.get("id")
+        draw.text((x + 180, y + 20), str(label)[:34], fill="#171613", font=body_font)
+        draw.text((x + 180, y + 60), str(item.get("category") or ""), fill="#736b60", font=body_font)
+        y += 230
+    bg.save(out, quality=92)
+    entry["card_url"] = _user_asset_url(out)
+    entries = [entry if e.get("look_id") == look_id else e for e in _load_lookbook()]
+    _save_lookbook(entries)
+    return {"ok": True, "look_id": look_id, "card_path": str(out), "card_url": _user_asset_url(out)}
 
 def _host_ip() -> str:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -262,6 +432,11 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
           <p class="eyebrow">Character dressing</p>
           <h2 class="section-title">Build the look</h2>
           <p class="help">1. Tap the avatar area you want to dress. 2. Pick the clothing card below. 3. Generate the final try-on image.</p>
+          <div class="avatar-tools">
+            <label class="upload-avatar">Replace base avatar<input id="avatarUpload" type="file" accept="image/png,image/jpeg,image/webp" onchange="uploadAvatar(this.files&&this.files[0])"></label>
+            <button type="button" class="primary ghost" onclick="loadLookbook()">Refresh lookbook</button>
+            <small id="avatarStatus">Current avatar is used for every generation.</small>
+          </div>
           <div id="slotButtons" class="slot-buttons"></div>
           <p id="slotCount" class="slot-count">0 of 5 slots filled</p>
           <div id="selectedLook" class="selected-look"></div>
@@ -286,6 +461,8 @@ def _render_page(query: dict[str, list[str]]) -> bytes:
       </div>
       <div id="dresserGrid" class="grid"></div>
       <div id="dressedResults" class="dressed-results"></div>
+      <div class="planner-card compact lookbook-head"><div><p class="eyebrow">Avatar lookbook</p><h2 class="section-title">Generated looks</h2></div><button class="primary ghost" onclick="loadLookbook()">Refresh</button></div>
+      <div id="lookbook" class="dressed-results"><div class="empty">Generate a look to start the lookbook.</div></div>
     </section>
 
     <section id="plannerTab" class="tab-panel">
@@ -351,7 +528,7 @@ CSS = r"""
 .planner-card{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;box-shadow:var(--shadow);padding:18px;margin-bottom:14px}.planner-card.compact{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{display:block;overflow:visible;-webkit-line-clamp:unset;margin:0 0 8px;font-size:28px}.help{color:var(--muted);font-weight:650;margin:0 0 16px;line-height:1.35}.controls{display:grid;grid-template-columns:1fr;gap:10px}.controls label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900}.controls select{width:100%;margin-top:5px;border:1px solid var(--line);background:var(--strong);border-radius:16px;padding:14px;font:inherit;font-weight:850;color:var(--ink)}
 .outfit-list{display:grid;gap:14px}.outfit{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:0 12px 34px rgba(33,28,20,.10)}.outfit-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}.score{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(22,101,52,.12);color:var(--good);font-weight:1000;font-size:18px}.outfit-title{min-width:0}.outfit-title h3{margin:0 0 4px;font-size:18px;line-height:1.1}.outfit-title p{margin:0;color:var(--muted);font-size:12px;font-weight:800}.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:#eadfce}.strip img{width:100%;aspect-ratio:4/5;object-fit:cover;display:block}.strip.two{grid-template-columns:repeat(2,1fr)}.strip.three{grid-template-columns:repeat(3,1fr)}.outfit-body{padding:14px}.reasons{margin:0 0 12px;padding-left:18px;color:var(--muted);font-weight:700;font-size:13px;line-height:1.3}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{border:0;border-radius:14px;min-height:42px;padding:0 13px;background:rgba(23,22,19,.08);font-weight:900;color:var(--ink)}.actions .save{background:var(--accent);color:white}.actions .yes{background:rgba(22,101,52,.12);color:var(--good)}.actions .no{background:rgba(153,27,27,.10);color:#991b1b}
 dialog{width:min(760px,calc(100vw - 20px));max-height:min(860px,calc(100dvh - 20px));border:0;border-radius:30px;padding:0;background:var(--strong);box-shadow:0 30px 100px rgba(0,0,0,.35);overflow:auto}dialog::backdrop{background:rgba(20,18,15,.52);backdrop-filter:blur(8px)}.close{position:sticky;float:right;top:10px;right:10px;z-index:2;margin:10px;border:0;width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.72);color:white;font-size:28px;line-height:1}.detail-img{width:100%;max-height:62dvh;object-fit:contain;background:#eadfce;display:block}.detail-copy{padding:18px}.detail-copy h2{display:block;overflow:visible;-webkit-line-clamp:unset;font-size:23px;margin-bottom:18px}.meta{display:grid;grid-template-columns:86px 1fr;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:start}.meta b{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.meta span{overflow-wrap:anywhere}
-.wide{width:100%}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
+.wide{width:100%}.avatar-tools{display:grid;gap:8px;margin:10px 0 12px}.avatar-tools small{color:var(--muted);font-weight:800}.upload-avatar{display:grid;place-items:center;min-height:46px;border:1px dashed rgba(23,22,19,.24);border-radius:16px;background:rgba(255,255,255,.58);font-weight:950;cursor:pointer}.upload-avatar input{display:none}.lookbook-head{margin-top:18px}.dressing-room{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}.avatar-stage{position:relative;min-height:560px;border:1px solid var(--line);border-radius:32px;background:linear-gradient(180deg,#eee9df,#dfd5c8);box-shadow:var(--shadow);overflow:hidden;display:grid;place-items:center}.avatar-hint{position:absolute;top:14px;left:14px;right:14px;z-index:2;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid var(--line);font-weight:950;text-align:center;box-shadow:0 8px 24px rgba(33,28,20,.10)}.avatar-base{max-height:92%;max-width:86%;object-fit:contain;filter:drop-shadow(0 18px 28px rgba(33,28,20,.18))}.body-hotspot{position:absolute;border:1px solid rgba(255,255,255,.82);background:rgba(17,24,39,.78);color:white;border-radius:999px;padding:9px 12px;font-weight:950;box-shadow:0 8px 28px rgba(0,0,0,.2);cursor:pointer;transition:transform .16s ease,background .16s ease,box-shadow .16s ease}.body-hotspot.active{background:var(--accent2);box-shadow:0 0 0 5px rgba(198,122,69,.22),0 12px 34px rgba(0,0,0,.24)}.body-hotspot.head{top:12%;left:50%;transform:translateX(-50%)}.body-hotspot.torso{top:31%;left:50%;transform:translateX(-50%)}.body-hotspot.outer{top:38%;right:13%}.body-hotspot.legs{top:57%;left:50%;transform:translateX(-50%)}.body-hotspot.feet{bottom:7%;left:50%;transform:translateX(-50%)}.dresser-panel,.picker-head{border:1px solid var(--line);background:var(--card);backdrop-filter:blur(16px);border-radius:28px;padding:16px;box-shadow:var(--shadow)}.slot-count{margin:4px 0 10px;color:var(--accent2);font-weight:1000}.slot-buttons{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.slot-btn{border:1px solid var(--line);background:rgba(255,255,255,.64);border-radius:999px;padding:10px 12px;font-weight:950;text-transform:capitalize;cursor:pointer}.slot-btn.active{background:var(--ink);color:#fff}.selected-look{display:grid;gap:8px;margin:12px 0}.selected-slot{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:8px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.55)}.selected-slot.active{border-color:rgba(198,122,69,.72);background:rgba(198,122,69,.12)}.selected-slot img{width:52px;height:64px;object-fit:contain;background:#eee2d3;border-radius:12px}.selected-slot b{text-transform:capitalize}.selected-slot small{display:block;color:var(--muted);font-weight:850;margin-top:2px}.selected-slot button{border:0;border-radius:12px;padding:8px 10px;background:rgba(23,22,19,.08);font-weight:900;cursor:pointer}.picker-head{position:sticky;top:76px;z-index:6;display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.picker-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.picker-help{margin:0;color:var(--muted);font-weight:800}.dresser-choice.selected{outline:4px solid rgba(22,101,52,.22);border-color:rgba(22,101,52,.55)}.dresser-choice.selected h2:after{content:' ✓ Selected';color:var(--good);font-weight:1000}.dress-status{margin-top:10px;color:var(--muted);font-weight:800}.dressed-results{margin-top:18px;display:grid;gap:14px}.dressed-card{border:1px solid var(--line);background:var(--strong);border-radius:28px;overflow:hidden;box-shadow:var(--shadow)}.dressed-card img{width:100%;display:block;background:#eee9df}.dressed-card .detail-copy{padding:14px}
 @media (min-width:900px){.dressing-room{grid-template-columns:minmax(360px,560px) 1fr}.avatar-stage{min-height:680px}.dressed-results{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:720px){.shell{padding-left:24px;padding-right:24px}.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.card-copy{padding:15px}h2{font-size:16px}.controls{grid-template-columns:repeat(4,1fr);align-items:end}.outfit-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (min-width:1040px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.outfit-list{grid-template-columns:repeat(3,minmax(0,1fr))}}
 """
@@ -425,7 +602,7 @@ let selectedDressing = readJsonStorage('wardrobeSelectedDressing', {});
 async function initDressing(){
   try{
     if(!dressingItems.length){ dressingItems = await (await fetch('/api/items')).json(); }
-    renderSlotButtons(); renderSelectedLook(); selectSlot(activeSlot, false);
+    renderSlotButtons(); renderSelectedLook(); selectSlot(activeSlot, false); loadAvatarStatus(); loadLookbook();
   }catch(e){
     const status=document.getElementById('dressStatus');
     if(status) status.textContent='Could not load wardrobe items: '+e.message;
@@ -497,28 +674,50 @@ document.addEventListener('keydown', (event)=>{
     event.preventDefault(); chooseDressingItem(event.target.dataset.itemId);
   }
 });
+async function uploadAvatar(file){
+  if(!file) return;
+  const status=document.getElementById('avatarStatus');
+  status.textContent='Uploading new base avatar…';
+  try{
+    const form=new FormData(); form.append('avatar', file);
+    const res=await fetch('/api/avatar',{method:'POST',body:form});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Upload failed');
+    document.getElementById('avatarBase').src=(data.image_url||'')+'?v='+Date.now();
+    status.textContent='Base avatar updated from '+(data.original_filename||file.name)+'.';
+  }catch(e){ status.textContent='Avatar update failed: '+e.message; }
+}
+async function loadAvatarStatus(){
+  const status=document.getElementById('avatarStatus'); if(!status) return;
+  try{
+    const data=await (await fetch('/api/avatar')).json();
+    status.textContent=data.exists ? 'Base avatar ready'+(data.updated_at?' · updated '+data.updated_at:'') : 'No base avatar found yet.';
+  }catch(e){}
+}
+async function requestDressedAvatar(item_ids, force=false){
+  const status=document.getElementById('dressStatus');
+  const btn=document.getElementById('generateDressed');
+  status.textContent=force?'Regenerating with a fresh output…':'Sending avatar + original garment photos to Gemini Flash…'; if(btn) btn.disabled=true;
+  try{
+    const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids, force})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Generation failed');
+    try{
+      renderDressedResult(data, item_ids.length);
+      status.textContent='Done. Saved to lookbook as '+(data.look_id||data.combo_hash||'generated look')+'.';
+    }catch(previewError){
+      renderDressedFallback(data);
+      status.textContent='Done — saved to lookbook, but this browser could not draw the preview. Tap Open image below.';
+    }
+    loadLookbook();
+  }catch(e){
+    status.textContent='Generation failed: '+e.message;
+  }finally{ if(btn) btn.disabled=false; }
+}
 async function generateDressedAvatar(){
   const item_ids=dressingSlots.map(s=>selectedDressing[s]).filter(Boolean);
   if(!item_ids.length){ alert('Pick at least one clothing item first.'); return; }
-  const status=document.getElementById('dressStatus');
-  const btn=document.getElementById('generateDressed');
-  status.textContent='Sending avatar + original garment photos to Gemini Flash…'; btn.disabled=true;
-  let data=null;
-  try{
-    const res=await fetch('/api/dressing/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_ids})});
-    data=await res.json();
-    if(!res.ok) throw new Error(data.error||'Generation failed');
-  }catch(e){
-    status.textContent='Generation failed: '+e.message;
-    return;
-  }finally{ btn.disabled=false; }
-  try{
-    renderDressedResult(data, item_ids.length);
-    status.textContent='Done. Saved as '+(data.combo_hash||'generated look')+'.';
-  }catch(e){
-    status.textContent='Done — Gemini saved it, but this browser could not draw the preview. Tap Open image below.';
-    renderDressedFallback(data);
-  }
+  requestDressedAvatar(item_ids, false);
 }
 function dressedImageUrl(data){
   const rawUrl=String(data && data.image_url || '');
@@ -530,7 +729,8 @@ function renderDressedResult(data, count){
   const results=document.getElementById('dressedResults'); if(!results) return;
   const url=dressedImageUrl(data);
   if(!url) throw new Error('No image URL returned');
-  const html=`<article class="dressed-card"><img src="${escapeHtml(url)}" alt="Dressed avatar"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>${String(count)} selected item${count===1?'':'s'}</h2><div class="meta"><b>Hash</b><code>${escapeHtml(data.combo_hash||'')}</code></div><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a></div></div></article>`;
+  const itemIds=JSON.stringify(data.item_ids||[]).replaceAll('"','&quot;');
+  const html=`<article class="dressed-card"><img src="${escapeHtml(url)}" alt="Dressed avatar"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>${String(count)} selected item${count===1?'':'s'}</h2><div class="meta"><b>Look</b><code>${escapeHtml(data.look_id||data.combo_hash||'')}</code></div><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a><button onclick="requestDressedAvatar(${itemIds}, true)">Regenerate</button>${data.look_id?`<button onclick="exportLookCard('${escapeHtml(data.look_id)}')">Export card</button>`:''}</div></div></article>`;
   results.insertAdjacentHTML('afterbegin', html);
 }
 function renderDressedFallback(data){
@@ -538,6 +738,29 @@ function renderDressedFallback(data){
   const url=dressedImageUrl(data) || String(data && data.image_url || '');
   if(!url) return;
   results.insertAdjacentHTML('afterbegin', `<article class="dressed-card"><div class="detail-copy"><p class="eyebrow">Generated look</p><h2>Preview fallback</h2><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open image</a></div></div></article>`);
+}
+async function loadLookbook(){
+  const box=document.getElementById('lookbook'); if(!box) return;
+  try{
+    const entries=await (await fetch('/api/dressing/lookbook')).json();
+    box.innerHTML=entries.length?entries.map(renderLookbookEntry).join(''):'<div class="empty">No generated avatar looks yet.</div>';
+  }catch(e){ box.innerHTML='<div class="empty">Could not load lookbook.</div>'; }
+}
+function renderLookbookEntry(entry){
+  const url=dressedImageUrl(entry);
+  const itemIds=JSON.stringify(entry.item_ids||[]).replaceAll('"','&quot;');
+  const pieces=(entry.items||[]).map(i=>escapeHtml(i.subcategory||i.category||i.id)).join(' · ');
+  return `<article class="dressed-card"><img src="${escapeHtml(url)}" alt="Generated look"><div class="detail-copy"><p class="eyebrow">${escapeHtml(entry.generated_at||'Saved look')}</p><h2>${escapeHtml(pieces||entry.look_id)}</h2><div class="meta"><b>Look</b><code>${escapeHtml(entry.look_id||'')}</code></div><div class="actions"><a class="chip active" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open</a><button onclick="requestDressedAvatar(${itemIds}, true)">Regenerate</button><button onclick="exportLookCard('${escapeHtml(entry.look_id)}')">Export card</button>${entry.card_url?`<a class="chip" href="${escapeHtml(entry.card_url)}" target="_blank" rel="noopener">Open card</a>`:''}</div></div></article>`;
+}
+async function exportLookCard(lookId){
+  const status=document.getElementById('dressStatus'); if(status) status.textContent='Building share card…';
+  try{
+    const res=await fetch('/api/dressing/lookbook/'+encodeURIComponent(lookId)+'/card',{method:'POST'});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Could not export card');
+    if(status) status.innerHTML='Share card ready: <a href="'+escapeHtml(data.card_url)+'" target="_blank" rel="noopener">open card</a>';
+    loadLookbook();
+  }catch(e){ if(status) status.textContent='Export failed: '+e.message; }
 }
 
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
@@ -579,6 +802,10 @@ class WardrobeHandler(BaseHTTPRequestHandler):
             self._send_json([_json_outfit(o) for o in outfits]); return
         if parsed.path == "/api/outfits":
             self._send_json([_json_outfit(o) for o in saved_outfits()]); return
+        if parsed.path == "/api/avatar":
+            self._send_json(_avatar_status()); return
+        if parsed.path == "/api/dressing/lookbook":
+            self._send_json(_lookbook()); return
         if parsed.path.startswith("/user/"):
             self._send_user_asset(unquote(parsed.path.removeprefix("/user/"))); return
         if parsed.path.startswith("/images/"):
@@ -590,6 +817,11 @@ class WardrobeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/avatar":
+                self._send_json(self._read_avatar_upload()); return
+            if parsed.path.startswith("/api/dressing/lookbook/") and parsed.path.endswith("/card"):
+                look_id = unquote(parsed.path.removeprefix("/api/dressing/lookbook/").removesuffix("/card"))
+                self._send_json(_export_look_card(look_id)); return
             payload = self._read_json()
             if parsed.path == "/api/outfits":
                 outfit = save_outfit(
@@ -606,7 +838,7 @@ class WardrobeHandler(BaseHTTPRequestHandler):
                 self._send_json(rate_outfit(outfit_id, int(payload.get("rating", 0)), payload.get("reason"))); return
             if parsed.path == "/api/dressing/generate":
                 item_ids = [str(x) for x in (payload.get("item_ids") or [])]
-                self._send_json(_run_dress_generation(item_ids), status=201); return
+                self._send_json(_run_dress_generation(item_ids, force=bool(payload.get("force"))), status=201); return
             self._send_json({"error": "not found"}, status=404)
         except Exception as e:  # small local tool; surface useful errors
             self._send_json({"error": str(e)}, status=400)
@@ -616,6 +848,40 @@ class WardrobeHandler(BaseHTTPRequestHandler):
         if not length:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _read_avatar_upload(self) -> dict:
+        content_type = self.headers.get("Content-Type", "")
+        if content_type.startswith("application/json"):
+            payload = self._read_json()
+            return _replace_base_avatar(payload.get("image_path") or payload.get("path") or "")
+        if not content_type.startswith("multipart/form-data"):
+            raise ValueError("Send multipart/form-data with an avatar file, or JSON with image_path")
+        from email.parser import BytesParser
+        from email.policy import default
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            raise ValueError("Missing avatar file")
+        body = self.rfile.read(length)
+        message = BytesParser(policy=default).parsebytes(
+            b"Content-Type: " + content_type.encode("utf-8") + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+        )
+        part = next((p for p in message.iter_parts() if p.get_param("name", header="content-disposition") == "avatar"), None)
+        filename = part.get_filename() if part else None
+        data = part.get_payload(decode=True) if part else None
+        if not filename or not data:
+            raise ValueError("Missing avatar file")
+        AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = Path(filename).suffix.lower() or ".jpg"
+        if suffix not in ALLOWED_AVATAR_EXTENSIONS:
+            raise ValueError("Avatar must be a jpg, png, or webp image")
+        tmp = AVATAR_DIR / ("upload_tmp" + suffix)
+        tmp.write_bytes(data)
+        try:
+            return _replace_base_avatar(tmp, original_filename=filename)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def _send_image(self, rel: str) -> None:
         self._send_file_from(IMAGE_DIR, rel)
