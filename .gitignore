@@ -20,3 +20,4 @@ data/user/
 
 # Xcode/SwiftPM local workspace state
 ios/WardrobeApp/.swiftpm/
+ios/WardrobeApp/WardrobeApp.xcodeproj/project.xcworkspace/xcuserdata/
