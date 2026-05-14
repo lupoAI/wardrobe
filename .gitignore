@@ -17,3 +17,6 @@ data/thumbnail_metadata/
 data/outfits.json
 _saved_outfits.json
 data/user/
+
+# Xcode/SwiftPM local workspace state
+ios/WardrobeApp/.swiftpm/

@@ -9,7 +9,7 @@ final class AppSettings: ObservableObject {
     private static let baseURLKey = "WardrobeBackendBaseURL"
 
     init() {
-        baseURLString = UserDefaults.standard.string(forKey: Self.baseURLKey) ?? "http://127.0.0.1:8765"
+        baseURLString = UserDefaults.standard.string(forKey: Self.baseURLKey) ?? "http://192.168.8.140:8765"
     }
 
     var baseURL: URL? { URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) }

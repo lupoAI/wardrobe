@@ -85,7 +85,7 @@ struct ItemGridView: View {
     }
 
     private var api: WardrobeAPI {
-        WardrobeAPI(baseURL: settings.baseURL ?? URL(string: "http://127.0.0.1:8765")!)
+        WardrobeAPI(baseURL: settings.baseURL ?? URL(string: "http://192.168.8.140:8765")!)
     }
 
     private func loadItems() async {
@@ -259,8 +259,8 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Backend") {
-                    TextField("http://127.0.0.1:8765", text: $settings.baseURLString)
-                    Text("Use 127.0.0.1 for the simulator. Use your Mac's LAN IP for a physical iPhone.")
+                    TextField("http://192.168.8.140:8765", text: $settings.baseURLString)
+                    Text("Use this Mac's LAN URL for a physical iPhone, or 127.0.0.1 for the simulator.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
