@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import hashlib
 import json
@@ -8,12 +9,13 @@ import mimetypes
 import os
 import socket
 import subprocess
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .catalog import items
+from .catalog import add_item, items
 from .config import IMAGE_DIR, PROJECT_ROOT, THUMBNAIL_DIR
 from .outfits import rate_outfit, save_outfit, saved_outfits, suggest_outfits
 
@@ -190,6 +192,22 @@ def _json_item(row: dict) -> dict:
 
 def _json_outfit(outfit: dict) -> dict:
     return {**outfit, "items": [_json_item(item) for item in outfit.get("items", [])]}
+
+
+def _add_item_from_json(payload: dict) -> dict:
+    image_base64 = str(payload.get("image_base64") or "")
+    if not image_base64:
+        raise ValueError("image_base64 is required")
+    filename = Path(str(payload.get("filename") or "ios-upload.jpg")).name or "ios-upload.jpg"
+    image_bytes = base64.b64decode(image_base64, validate=True)
+    with tempfile.TemporaryDirectory(prefix="wardrobe-upload-") as tmp_dir:
+        tmp_path = Path(tmp_dir) / filename
+        tmp_path.write_bytes(image_bytes)
+        return add_item(
+            tmp_path,
+            category=payload.get("category"),
+            notes=payload.get("notes"),
+        )
 
 
 def _render_page(query: dict[str, list[str]]) -> bytes:
@@ -591,6 +609,8 @@ class WardrobeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             payload = self._read_json()
+            if parsed.path == "/api/items":
+                self._send_json(_json_item(_add_item_from_json(payload)), status=201); return
             if parsed.path == "/api/outfits":
                 outfit = save_outfit(
                     item_ids=payload.get("item_ids") or [],
